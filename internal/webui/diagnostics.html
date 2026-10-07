@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>网关自检 · apitoken</title>
+<link rel="stylesheet" href="/static/style.css" />
+<style>
+  .group-title{font-size:12px;color:var(--muted);margin:14px 0 6px;letter-spacing:.5px}
+  .check{display:grid;grid-template-columns:22px 190px 1fr;gap:10px;align-items:start;padding:8px 4px;border-bottom:1px solid var(--border);font-size:13px}
+  .check:last-child{border-bottom:0}
+  .check .lv{width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
+  .lv.pass{background:#0f2b17;color:var(--ok);border:1px solid #1d4429}
+  .lv.warn{background:#2b2413;color:var(--warn);border:1px solid #5c4a22}
+  .lv.fail{background:#2b1113;color:var(--err);border:1px solid #5c2222}
+  .lv.skip{background:#1b2029;color:var(--muted);border:1px solid var(--border)}
+  .check .nm{font-weight:600}
+  .check .dt{color:var(--muted);word-break:break-all}
+  .check .fx{color:var(--warn);font-size:12px;margin-top:3px}
+  .netgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px}
+  .net{border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13px}
+  .net .h{font-weight:600;margin-bottom:6px;word-break:break-all}
+  .steps{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:6px}
+  .steps b{color:var(--ok)}
+  .steps b.bad{color:var(--err)}
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ apitoken</h1>
+  <nav>
+    <a href="/">控制台</a>
+    <a href="/logs">调用日志</a>
+    <a href="/diagnostics" class="active">测试</a>
+  </nav>
+  <span class="tag" id="meta">-</span>
+  <span class="sp"></span>
+  <input id="token" placeholder="管理令牌 adm-xxx" style="width:190px" />
+  <button class="ghost" onclick="saveToken()">保存</button>
+  <button class="ghost" onclick="loadOverview()">刷新</button>
+</header>
+
+<main>
+  <div class="cards" id="cards"></div>
+
+  <section>
+    <h2>网关体检<span class="sp"></span>
+      <span class="muted" style="font-size:12px">配置自检 + 渠道连通性 + 出网探测</span>
+      <button id="runBtn" onclick="runDiagnostics()">开始体检</button>
+    </h2>
+    <div class="pad" id="runResult">
+      <div class="muted">点击「开始体检」将逐个渠道发送 ping 请求，并检测各上游域名的 DNS / TCP / TLS。</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>配置自检<span class="sp"></span><span class="muted" style="font-size:12px" id="checkSum"></span></h2>
+    <div class="pad" id="checkBox"><div class="muted">加载中…</div></div>
+  </section>
+
+  <section>
+    <h2>渠道连通性<span class="sp"></span><span class="muted" style="font-size:12px" id="chSum"></span></h2>
+    <div class="pad">
+      <table>
+        <thead><tr><th>渠道</th><th>Base URL</th><th>状态</th><th class="nowrap">耗时</th><th>探测模型</th><th>详情</th></tr></thead>
+        <tbody id="chBody"><tr><td colspan="6" class="empty">尚未体检</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>出网检测（DNS / TCP / TLS）<span class="sp"></span><span class="muted" style="font-size:12px" id="netSum"></span></h2>
+    <div class="pad"><div class="netgrid" id="netBox"><div class="muted">尚未体检</div></div></div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/app.js"></script>
+<script>
+let overview = null;
+
+const LV_TEXT = {pass: '通过', warn: '警告', fail: '失败', skip: '跳过'};
+const LV_ICON = {pass: '✓', warn: '!', fail: '✕', skip: '-'};
+const GROUP_CN = {
+  config: '基础配置与鉴权', channel: '渠道配置', route: '路由配置',
+  storage: '数据持久化', logging: '日志设置', network: '网络设置'
+};
+
+async function loadOverview() {
+  try {
+    overview = await api('/admin/diagnostics');
+    $('meta').textContent = '运行 ' + overview.uptime + ' · 渠道 ' + overview.channels + ' · 日志 ' + fmt(overview.logs_kept) + ' 条';
+    renderSummaryCards(overview.summary, overview);
+    renderChecks(overview.checks);
+  } catch (e) { toast(e.message, true); }
+}
+
+function renderSummaryCards(s, o) {
+  $('cards').innerHTML = [
+    ['健康状态', o.healthy ? '正常' : '有问题', o.healthy ? '未发现失败项' : '存在失败项，请查看下方建议'],
+    ['通过', fmt(s.pass), '配置正确'],
+    ['警告', fmt(s.warn), '建议优化'],
+    ['失败', fmt(s.fail), '需要处理'],
+    ['启用渠道', fmt(o.channels), '可在控制台管理'],
+    ['调用日志', fmt(o.logs_kept), '内存中保留'],
+    ['配置文件', o.config, '渠道持久化：' + o.data_file]
+  ].map(([l, v, sub]) => '<div class="card"><div class="label">' + esc(l) + '</div><div class="value" style="font-size:16px">' + esc(String(v)) + '</div><div class="sub">' + esc(String(sub)) + '</div></div>').join('');
+}
+
+function renderChecks(checks) {
+  if (!checks || !checks.length) { $('checkBox').innerHTML = '<div class="muted">无自检项</div>'; return; }
+  const groups = {};
+  checks.forEach(c => { (groups[c.group] = groups[c.group] || []).push(c); });
+  let html = '';
+  for (const g in groups) {
+    html += '<div class="group-title">' + esc(GROUP_CN[g] || g) + '</div>';
+    groups[g].forEach(c => {
+      html += '<div class="check">' +
+        '<span class="lv ' + c.level + '" title="' + esc(LV_TEXT[c.level] || c.level) + '">' + (LV_ICON[c.level] || '?') + '</span>' +
+        '<span class="nm">' + esc(c.name) + '</span>' +
+        '<span><span class="dt">' + esc(c.detail || '-') + '</span>' +
+        (c.fix ? '<div class="fx">建议：' + esc(c.fix) + '</div>' : '') + '</span>' +
+        '</div>';
+    });
+  }
+  $('checkBox').innerHTML = html;
+  $('checkSum').textContent = '通过 ' + checks.filter(c => c.level === 'pass').length +
+    ' · 警告 ' + checks.filter(c => c.level === 'warn').length +
+    ' · 失败 ' + checks.filter(c => c.level === 'fail').length;
+}
+
+function renderChannels(list) {
+  if (!list || !list.length) {
+    $('chBody').innerHTML = '<tr><td colspan="6" class="empty">没有启用的渠道</td></tr>';
+    $('chSum').textContent = '';
+    return;
+  }
+  $('chBody').innerHTML = list.map(c => {
+    const status = c.ok
+      ? '<span class="pill healthy">正常 ' + c.status + '</span>'
+      : '<span class="pill unhealthy">' + (c.status ? c.status : '失败') + '</span>';
+    const detail = c.ok
+      ? (c.reply ? '<span class="muted" title="' + esc(c.reply) + '">' + esc(c.reply.slice(0, 80)) + '</span>' : '<span class="muted">-</span>')
+      : '<span class="err" title="' + esc(c.error || '') + '">' + esc((c.error || '未知错误').slice(0, 120)) + '</span>';
+    return '<tr>' +
+      '<td><b>' + esc(c.name) + '</b><div class="muted mono">' + esc(c.id) + '</div></td>' +
+      '<td class="mono">' + esc(c.base_url) + '</td>' +
+      '<td class="nowrap">' + status + '</td>' +
+      '<td class="mono nowrap">' + fmtLatency(c.latency_ms) + '</td>' +
+      '<td class="mono">' + esc(c.model || '-') + '</td>' +
+      '<td>' + detail + '</td></tr>';
+  }).join('');
+  const ok = list.filter(c => c.ok).length;
+  $('chSum').textContent = ok + ' / ' + list.length + ' 正常';
+}
+
+function renderNetwork(list) {
+  if (!list || !list.length) {
+    $('netBox').innerHTML = '<div class="muted">没有可检测的上游域名</div>';
+    $('netSum').textContent = '';
+    return;
+  }
+  $('netBox').innerHTML = list.map(n => {
+    const step = (ok, label, ms) => '<span>' + (ok ? '<b>✓</b> ' : '<b class="bad">✕</b> ') + label + (ms ? ' ' + ms + 'ms' : '') + '</span>';
+    return '<div class="net">' +
+      '<div class="h">' + statusPillText(n.level) + ' ' + esc(n.host) + '</div>' +
+      '<div class="steps">' +
+      step(n.dns, 'DNS' + (n.addrs && n.addrs.length ? ' ' + esc(n.addrs[0]) : ''), 0) +
+      step(n.tcp, 'TCP', n.tcp_ms) +
+      step(n.tls, 'TLS', n.tls_ms) +
+      '</div>' +
+      (n.error ? '<div class="dt" style="margin-top:6px">' + esc(n.error) + '</div>' : '') +
+      '</div>';
+  }).join('');
+  $('netSum').textContent = list.filter(n => n.level === 'pass').length + ' / ' + list.length + ' 可达';
+}
+
+function statusPillText(level) {
+  const map = {pass: 'healthy', warn: 'warn', fail: 'unhealthy'};
+  const txt = {pass: '可达', warn: '部分可达', fail: '不可达'};
+  return '<span class="pill ' + (map[level] || '') + '">' + (txt[level] || level) + '</span>';
+}
+
+async function runDiagnostics() {
+  const btn = $('runBtn');
+  btn.disabled = true; btn.textContent = '体检中…';
+  $('runResult').innerHTML = '<div class="muted">正在检测：配置自检 → 逐个渠道 ping → 域名 DNS/TCP/TLS…</div>';
+  try {
+    const r = await api('/admin/diagnostics/run', {method: 'POST', body: '{}'});
+    const s = r.summary;
+    $('runResult').innerHTML =
+      '<div class="tagline"><span>结论 <b style="color:' + (r.healthy ? 'var(--ok)' : 'var(--err)') + '">' +
+      (r.healthy ? '网关运行正常' : '发现 ' + s.fail + ' 项失败') + '</b></span>' +
+      '<span>耗时 ' + fmtLatency(r.duration_ms) + '</span>' +
+      '<span>通过 ' + s.pass + '</span><span>警告 ' + s.warn + '</span><span>失败 ' + s.fail + '</span></div>';
+    renderChecks(r.checks);
+    renderChannels(r.channels);
+    renderNetwork(r.network);
+    await loadOverview();
+    toast(r.healthy ? '体检完成，未发现问题' : '体检完成：' + s.fail + ' 项失败', !r.healthy);
+  } catch (e) {
+    $('runResult').innerHTML = '<div class="hint err">体检失败：' + esc(e.message) + '</div>';
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false; btn.textContent = '开始体检';
+  }
+}
+
+initToken();
+loadOverview();
+</script>
+</body>
+</html>

@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>调用日志 · apitoken</title>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<header>
+  <h1>⚡ apitoken</h1>
+  <nav>
+    <a href="/">控制台</a>
+    <a href="/logs" class="active">调用日志</a>
+    <a href="/diagnostics">测试</a>
+  </nav>
+  <span class="tag" id="meta">-</span>
+  <span class="sp"></span>
+  <input id="token" placeholder="管理令牌 adm-xxx" style="width:190px" />
+  <button class="ghost" onclick="saveToken()">保存</button>
+  <button class="ghost" onclick="load()">刷新</button>
+</header>
+
+<main>
+  <div class="cards" id="cards"></div>
+
+  <section>
+    <h2>调用明细<span class="sp"></span>
+      <label class="row" style="display:inline-flex;align-items:center;gap:6px;margin:0">
+        <input type="checkbox" id="autoRefresh" style="width:auto" checked /><span class="muted" style="font-size:12px">自动刷新(10s)</span>
+      </label>
+      <button class="ghost" onclick="exportCsv()">导出 CSV</button>
+      <button class="ghost" onclick="exportJson()">导出 JSON</button>
+      <button class="danger" onclick="clearLogs()">清空</button>
+    </h2>
+
+    <div class="pad">
+      <div class="filters">
+        <div><label>模型</label><select id="q_model"><option value="">全部</option></select></div>
+        <div><label>渠道</label><select id="q_channel"><option value="">全部</option></select></div>
+        <div><label>结果</label><select id="q_status">
+          <option value="">全部</option>
+          <option value="success">仅成功</option>
+          <option value="error">仅失败</option>
+          <option value="429">429 限流</option>
+          <option value="401">401 鉴权</option>
+          <option value="400">400 参数</option>
+          <option value="404">404 路由</option>
+          <option value="500">500 服务</option>
+        </select></div>
+        <div><label>类型</label><select id="q_stream">
+          <option value="">全部</option>
+          <option value="1">流式</option>
+          <option value="0">非流式</option>
+        </select></div>
+        <div><label>关键字（ID/错误/内容）</label><input id="q_keyword" placeholder="输入后回车" /></div>
+        <div><label>每页</label><select id="q_size">
+          <option>20</option><option selected>50</option><option>100</option><option>200</option>
+        </select></div>
+        <div style="display:flex;align-items:flex-end;gap:8px">
+          <button onclick="page=1;load()">查询</button>
+          <button class="ghost" onclick="resetFilters()">重置</button>
+        </div>
+      </div>
+      <p class="hint">日志保存在内存中（可通过 config.yaml 的 <code>logging.keep_logs</code> 调整条数），重启后清空。</p>
+    </div>
+
+    <table>
+      <thead><tr>
+        <th class="nowrap">时间</th><th>模型</th><th>渠道</th><th>类型</th>
+        <th>状态</th><th class="nowrap">耗时</th><th class="nowrap">尝试</th>
+        <th class="nowrap">Token(入/出)</th><th>说明</th><th>操作</th>
+      </tr></thead>
+      <tbody id="logBody"></tbody>
+    </table>
+
+    <div class="pager">
+      <button class="mini ghost" id="prevBtn" onclick="turn(-1)">上一页</button>
+      <span id="pageInfo">-</span>
+      <button class="mini ghost" id="nextBtn" onclick="turn(1)">下一页</button>
+      <span class="sp"></span>
+      <span class="muted" id="keepInfo"></span>
+    </div>
+  </section>
+
+  <section>
+    <h2>聚合分析<span class="sp"></span><span class="muted" style="font-size:12px">基于当前筛选条件</span></h2>
+    <div class="pad">
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr))">
+        <div>
+          <label>按模型（次数 / 平均延迟）</label>
+          <div class="bars" id="barModel"></div>
+        </div>
+        <div>
+          <label>按渠道（次数 / 平均延迟）</label>
+          <div class="bars" id="barChannel"></div>
+        </div>
+        <div>
+          <label>按状态码</label>
+          <div class="bars" id="barStatus"></div>
+        </div>
+      </div>
+      <label style="margin-top:14px">高频错误</label>
+      <div class="bars" id="barError"></div>
+    </div>
+  </section>
+</main>
+
+<dialog id="detailDlg">
+  <div class="dlg-head">调用详情 <span class="muted mono" id="d_id" style="font-weight:400"></span></div>
+  <div class="dlg-body" id="d_body"></div>
+  <div class="dlg-foot">
+    <button class="ghost" onclick="copyReqId()">复制 Request ID</button>
+    <button onclick="document.getElementById('detailDlg').close()">关闭</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/app.js"></script>
+<script>
+let page = 1;
+let pages = 1;
+let lastRequestId = '';
+let timer = null;
+
+function query(extra = {}) {
+  const p = new URLSearchParams({
+    page: String(page),
+    page_size: $('q_size').value,
+    model: $('q_model').value,
+    channel: $('q_channel').value,
+    status: $('q_status').value,
+    stream: $('q_stream').value,
+    keyword: $('q_keyword').value.trim()
+  });
+  for (const k in extra) p.set(k, extra[k]);
+  return p.toString();
+}
+
+async function load() {
+  try {
+    const data = await api('/admin/logs?' + query());
+    page = data.page; pages = data.pages;
+    renderCards(data.stats, data);
+    renderTable(data.items);
+    renderPager(data);
+    renderBars('barModel', data.stats.by_model, {showLatency: true});
+    renderBars('barChannel', data.stats.by_channel, {showLatency: true});
+    renderBars('barStatus', data.stats.by_status);
+    renderBars('barError', (data.stats.top_errors || []).map(e => ({name: e.name, count: e.count, failed: e.count})));
+    $('meta').textContent = '共 ' + fmt(data.kept) + ' 条内存日志';
+    await loadFacets();
+  } catch (e) { toast(e.message, true); }
+}
+
+let facetsLoaded = false;
+async function loadFacets() {
+  const f = await api('/admin/logs/facets');
+  if (facetsLoaded) return;
+  fillSelect('q_model', f.models);
+  fillSelect('q_channel', (f.channels || []).map(c => c.id), f.channels || []);
+  facetsLoaded = true;
+}
+
+function fillSelect(id, values, pairs) {
+  const sel = $(id);
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">全部</option>' + values.map(v => {
+    let label = v;
+    if (pairs) {
+      const hit = pairs.find(p => p.id === v);
+      if (hit && hit.name) label = v + ' · ' + hit.name;
+    }
+    return '<option value="' + esc(v) + '">' + esc(label) + '</option>';
+  }).join('');
+  sel.value = cur;
+}
+
+function renderCards(s, page) {
+  const rate = s.total ? (s.success * 100 / s.total).toFixed(1) + '%' : '-';
+  $('cards').innerHTML = [
+    ['命中条数', fmt(page.total), '内存保留 ' + fmt(page.kept) + ' 条'],
+    ['成功率', rate, fmt(s.success) + ' 成功 / ' + fmt(s.failed) + ' 失败'],
+    ['故障转移', fmt(s.failover_count), '尝试次数 > 1 的请求'],
+    ['Token 用量', fmt(s.prompt_tokens + s.completion_tokens), '↓' + fmt(s.prompt_tokens) + ' ↑' + fmt(s.completion_tokens)],
+    ['平均延迟', fmtLatency(s.avg_latency_ms), 'P95 ' + fmtLatency(s.p95_latency_ms)],
+    ['涉及模型', fmt((s.by_model || []).length), '渠道 ' + fmt((s.by_channel || []).length) + ' 个']
+  ].map(([l, v, sub]) => '<div class="card"><div class="label">' + l + '</div><div class="value">' + v + '</div><div class="sub">' + sub + '</div></div>').join('');
+}
+
+function renderTable(items) {
+  if (!items || !items.length) {
+    $('logBody').innerHTML = '<tr><td colspan="10" class="empty">没有匹配的调用记录</td></tr>';
+    return;
+  }
+  $('logBody').innerHTML = items.map(e => {
+    const chLabel = e.channel_id ? esc(e.channel_id) + (e.channel_name ? ' <span class="muted">' + esc(e.channel_name) + '</span>' : '') : '<span class="muted">-</span>';
+    const note = e.error
+      ? '<span class="err" title="' + esc(e.error) + '">' + esc(e.error.slice(0, 70)) + (e.error.length > 70 ? '…' : '') + '</span>'
+      : (e.response_snippet ? '<span class="muted" title="' + esc(e.response_snippet) + '">' + esc(e.response_snippet.slice(0, 60)) + '…</span>' : '<span class="muted">-</span>');
+    const retry = e.attempts > 1 ? '<span class="pill warn">第' + e.attempts + '次</span>' : '';
+    return '<tr>' +
+      '<td class="mono nowrap" title="' + esc(fmtTime(e.time)) + '">' + fmtTimeShort(e.time) + '</td>' +
+      '<td class="mono">' + esc(e.model || '-') + (e.upstream_model && e.upstream_model !== e.model ? '<div class="muted">→ ' + esc(e.upstream_model) + '</div>' : '') + '</td>' +
+      '<td class="mono">' + chLabel + '</td>' +
+      '<td class="nowrap">' + (e.stream ? '<span class="pill">流式</span>' : '<span class="pill">普通</span>') + '</td>' +
+      '<td class="nowrap">' + statusPill(e.status) + '</td>' +
+      '<td class="mono nowrap">' + fmtLatency(e.latency_ms) + '</td>' +
+      '<td class="nowrap">' + (retry || '<span class="muted">1</span>') + '</td>' +
+      '<td class="mono nowrap">' + fmt(e.prompt_tokens) + '/' + fmt(e.completion_tokens) + '</td>' +
+      '<td>' + note + '</td>' +
+      '<td class="nowrap">' +
+      '<button class="mini ghost" onclick="showDetail(\'' + esc(e.request_id) + '\')">详情</button>' +
+      '<button class="mini ghost" onclick="copyId(\'' + esc(e.request_id) + '\')">复制ID</button>' +
+      '</td></tr>';
+  }).join('');
+}
+
+function renderPager(data) {
+  $('pageInfo').textContent = '第 ' + data.page + ' / ' + data.pages + ' 页 · 共 ' + fmt(data.total) + ' 条';
+  $('keepInfo').textContent = '内存保留 ' + fmt(data.kept) + ' 条';
+  $('prevBtn').disabled = data.page <= 1;
+  $('nextBtn').disabled = data.page >= data.pages;
+}
+
+function turn(delta) {
+  const next = page + delta;
+  if (next < 1 || next > pages) return;
+  page = next;
+  load();
+}
+
+function resetFilters() {
+  ['q_model', 'q_channel', 'q_status', 'q_stream'].forEach(id => $(id).value = '');
+  $('q_keyword').value = '';
+  page = 1;
+  load();
+}
+
+async function showDetail(requestId) {
+  lastRequestId = requestId;
+  try {
+    const d = await api('/admin/logs/' + encodeURIComponent(requestId));
+    $('d_id').textContent = requestId;
+    const s = d.summary || {};
+    const attempts = (d.attempts || []).map((a, i) => {
+      const step = d.attempts.length > 1 ? '第 ' + (i + 1) + ' 次尝试 · ' : '';
+      return '<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">' +
+        '<div class="row" style="justify-content:space-between">' +
+        '<b>' + step + esc(a.channel_id || '未匹配渠道') + (a.channel_name ? ' <span class="muted">' + esc(a.channel_name) + '</span>' : '') + '</b>' +
+        '<span>' + statusPill(a.status) + ' <span class="mono muted">' + fmtLatency(a.latency_ms) + '</span></span>' +
+        '</div>' +
+        '<div class="kv" style="margin-top:8px">' +
+        '<span class="k">时间</span><span class="mono">' + fmtTime(a.time) + '</span>' +
+        '<span class="k">客户端</span><span class="mono">' + esc(a.client_ip || '-') + '</span>' +
+        '<span class="k">模型</span><span class="mono">' + esc(a.model || '-') + (a.upstream_model ? ' → ' + esc(a.upstream_model) : '') + '</span>' +
+        '<span class="k">上游</span><span class="mono" style="word-break:break-all">' + esc(a.endpoint || '-') + '</span>' +
+        '<span class="k">类型</span><span>' + (a.stream ? '流式 SSE' : '非流式') + ' · 尝试 ' + a.attempts + ' 次</span>' +
+        '<span class="k">Token</span><span class="mono">入 ' + fmt(a.prompt_tokens) + ' / 出 ' + fmt(a.completion_tokens) + '</span>' +
+        (a.error ? '<span class="k">错误</span><span class="err mono" style="word-break:break-all">' + esc(a.error) + '</span>' : '') +
+        '</div>' +
+        (a.request_snippet ? '<label style="margin-top:8px">请求摘要</label><pre class="log">' + esc(a.request_snippet) + '</pre>' : '') +
+        (a.response_snippet ? '<label style="margin-top:8px">响应/错误摘要</label><pre class="log">' + esc(a.response_snippet) + '</pre>' : '') +
+        '</div>';
+    }).join('');
+    $('d_body').innerHTML =
+      '<div class="tagline" style="margin-bottom:12px">' +
+      '<span>模型 <b>' + esc(d.model || '-') + '</b></span>' +
+      '<span>客户端 <b>' + esc(d.client_ip || '-') + '</b></span>' +
+      '<span>尝试 <b>' + ((d.attempts || []).length) + '</b> 次</span>' +
+      '<span>成功 <b>' + fmt(s.success || 0) + '</b> / 失败 <b>' + fmt(s.failed || 0) + '</b></span>' +
+      '<span>总延迟 <b>' + fmtLatency(s.avg_latency_ms) + '</b></span>' +
+      '</div>' + (attempts || '<div class="muted">无记录</div>');
+    $('detailDlg').showModal();
+  } catch (e) { toast(e.message, true); }
+}
+
+function copyId(id) {
+  navigator.clipboard?.writeText(id).then(() => toast('已复制 ' + id), () => toast('复制失败', true));
+}
+function copyReqId() { copyId(lastRequestId); }
+
+function exportCsv() {
+  window.open('/admin/logs/export?format=csv&' + query({page: '1', page_size: '500'}), '_blank');
+}
+function exportJson() {
+  window.open('/admin/logs/export?format=json&' + query({page: '1', page_size: '500'}), '_blank');
+}
+async function clearLogs() {
+  if (!confirm('确认清空全部调用日志？')) return;
+  try {
+    const r = await api('/admin/logs', {method: 'DELETE'});
+    toast('已清空 ' + r.cleared + ' 条');
+    page = 1; facetsLoaded = false; load();
+  } catch (e) { toast(e.message, true); }
+}
+
+function scheduleAuto() {
+  clearInterval(timer);
+  if ($('autoRefresh').checked) timer = setInterval(load, 10000);
+}
+
+initToken();
+$('q_keyword').addEventListener('keydown', e => { if (e.key === 'Enter') { page = 1; load(); } });
+['q_model', 'q_channel', 'q_status', 'q_stream', 'q_size'].forEach(id =>
+  $(id).addEventListener('change', () => { page = 1; load(); }));
+$('autoRefresh').addEventListener('change', scheduleAuto);
+
+load();
+scheduleAuto();
+</script>
+</body>
+</html>

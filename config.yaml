@@ -1,0 +1,111 @@
+# apitoken 网关配置文件
+# 渠道/路由也可以通过管理 API 或 Web 界面动态增删改，改动会持久化到 data/gateway.json
+#
+# 渠道只需三样东西：base_url（到 /v1 这一层）、api_key、支持的模型。
+# 网关默认按 OpenAI 兼容协议转发，请求路径为 /chat/completions，
+# 鉴权默认 Authorization: Bearer <api_key>。
+
+server:
+  addr: ":8070"            # 监听地址
+  request_timeout: 300s    # 非流式请求整体超时
+  stream_timeout: 900s     # 流式请求整体超时
+  read_timeout: 60s
+  write_timeout: 0s        # 0 表示不限制（流式需要）
+  max_body_mb: 32
+  data_dir: "./data"
+
+security:
+  # 客户端调用网关时需要携带的 Key（Authorization: Bearer <key>）。
+  # 留空表示不校验，方便内网使用。
+  client_keys:
+    - "sk-gateway-0001"
+  # 管理接口令牌，填写后 /admin/* 需要 X-Admin-Token 或 Bearer 携带；留空则不校验
+  admin_token: "adm-0001"
+
+routing:
+  strategy: "priority_round_robin" # priority_round_robin | round_robin | failover | random
+  max_attempts: 3                  # 单次请求最多尝试的渠道数量（1 表示不做故障转移）
+  force_stream_usage: false        # 流式请求自动注入 stream_options.include_usage 以统计 token
+  retry_status: [408, 409, 425, 429, 500, 502, 503, 504, 529]
+
+logging:
+  level: "info"        # debug | info | warn | error
+  access_log: true
+  keep_logs: 1000      # 内存中保留的调用日志条数（/logs 页面可查看与筛选）
+  record_payload: false  # 开启后调用日志会记录请求/响应摘要（可能含敏感内容）
+  payload_limit: 2000    # 摘要最大字符数
+
+upstream:
+  default_timeout: 120s
+  connect_timeout: 10s
+  keep_alive: 30s
+  max_idle_conns: 200
+  proxy_url: ""       # 留空=遵循环境变量 HTTP_PROXY/HTTPS_PROXY；填 none=强制直连；也可填 http://127.0.0.1:7890
+
+# 显式路由：同一个模型名可以绑定多个渠道，按顺序故障转移
+routes:
+  - model: "deepseek-chat"
+    enabled: true
+    channels: ["deepseek-1", "tencent-1"]   # 按顺序尝试
+    model_map:                                # 可选：按渠道覆盖真实模型名
+      tencent-1: "deepseek-v3.2"
+
+# 渠道（上游账号）。也可以启动后在 Web 界面添加
+channels:
+  - id: "deepseek-1"
+    name: "DeepSeek 官方"
+    base_url: "https://api.deepseek.com/v1"
+    api_key: "sk-xxxxxxxxxxxxxxxx"
+    models: ["deepseek-chat", "deepseek-reasoner"]
+    weight: 1
+    priority: 10
+    enabled: true
+
+  - id: "sensenova-1"
+    name: "商汤日日新 Token Plan"
+    base_url: "https://token.sensenova.cn/v1"
+    api_key: "xxxxxxxxxxxxxxxx"
+    models: ["SenseNova-6.8-Flash-Lite"]
+    weight: 1
+    priority: 20
+    enabled: true
+    # 若用大装置 compatible-mode，base_url 改为 https://api.sensenova.cn/compatible-mode/v2
+
+  - id: "tencent-1"
+    name: "腾讯云代码助手 WorkBuddy"
+    base_url: "https://api.copilot.tencent.com/api/v1"
+    api_key: "xxxxxxxxxxxxxxxx"
+    models: []      # 留空 = 放通所有模型，也可在界面上点“拉取模型”自动填充
+    weight: 1
+    priority: 5
+    enabled: true
+    note: "专享版 base_url: https://{enterpriseId}.copilot.qq.com/api/v1"
+
+  - id: "opencode-1"
+    name: "OpenCode Zen"
+    base_url: "https://opencode.ai/zen/v1"
+    api_key: "xxxxxxxxxxxxxxxx"
+    models: ["deepseek-v4-pro", "deepseek-v4.1-flash", "kimi-k2.7-code", "glm-5.3", "minimax-m3"]
+    weight: 1
+    priority: 30
+    enabled: false
+    note: "订阅 Key 直接当 Bearer 用；Claude 系需 chat_path=/messages，GPT 系需 /responses"
+
+  - id: "stepfun-1"
+    name: "阶跃星辰 StepFun"
+    base_url: "https://api.stepfun.com/v1"
+    api_key: "xxxxxxxxxxxxxxxx"
+    models: ["step-3.5-flash", "step-2-16k", "step-1x-32k"]
+    weight: 1
+    priority: 40
+    enabled: false
+    note: "Coding Plan 订阅用 https://api.stepfun.com/step_plan/v1"
+
+  # 非 Bearer 鉴权的例子（一般用不到）：
+  # - id: "custom-1"
+  #   name: "某云（X-API-Key 鉴权）"
+  #   base_url: "https://example.com/v1"
+  #   api_key: "xxxx"
+  #   auth_style: "header"      # 直接把 key 放进 auth_header 指定的请求头
+  #   auth_header: "X-API-Key"
+  #   models: ["xxx"]

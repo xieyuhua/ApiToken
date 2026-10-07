@@ -1,0 +1,11 @@
+# 编译产物
+apitoken
+apitoken.exe
+*.exe
+
+# 运行期数据（含 API Key，勿提交）
+data/
+*.log
+
+# 上游返回的临时文件
+server*.err
