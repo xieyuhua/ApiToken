@@ -145,10 +145,12 @@
     <label style="margin-top:16px">模型映射（可选：各渠道上的真实模型名不同时使用）</label>
     <div id="r_mapList"></div>
     <div class="row" style="margin-top:8px">
-      <select id="r_mapChannel" style="flex:1"><option value="">— 选择渠道 —</option></select>
-      <input id="r_mapModel" placeholder="可选：直接填写模型名（留空则稍后在下拉中选择）" style="flex:1" />
-      <button class="ghost mini" onclick="addRouteMap()">添加映射</button>
+      <select id="r_mapChannel" style="flex:1" onchange="onMapChannelChange()"></select>
+      <span class="muted">→</span>
+      <select id="r_mapPickModel" style="flex:1"></select>
+      <button class="ghost mini" onclick="addRouteMap()">加入路由</button>
     </div>
+    <p class="hint" id="r_mapHint">先选渠道，右侧会自动列出该渠道可用的模型名；不需要映射就选「（跟随对外模型名）」。</p>
     <p class="hint">不配置映射时，客户端的模型名会原样发给上游。显式路由优先于渠道 models 的自动匹配。</p>
   </div>
   <div class="dlg-foot">
@@ -498,7 +500,8 @@ function fillChannelSelects() {
     sel.value = keep;
   };
   opts($('r_channelPick'), '— 选择要添加的渠道 —');
-  opts($('r_mapChannel'), '— 选择渠道 —');
+  opts($('r_mapChannel'), '— ① 先选择渠道 —');
+  onMapChannelChange();
 }
 
 function renderRouteChannels() {
@@ -602,13 +605,38 @@ function renderRouteMaps() {
   }).join('');
 }
 
+/** 选择渠道后，列出该渠道可用的上游模型 */
+function onMapChannelChange() {
+  const ch = $('r_mapChannel').value;
+  const sel = $('r_mapPickModel');
+  const outer = routeModelValue();
+  if (!ch) {
+    sel.innerHTML = '<option value="">— ② 再选择模型 —</option>';
+    return;
+  }
+  const opts = upstreamModelsFor(ch);
+  sel.innerHTML = '<option value="">（跟随对外模型名）</option>' +
+    opts.map(x => '<option value="' + esc(x) + '">' + esc(x) + '</option>').join('') +
+    '<option value="__custom__">其他…（手动输入）</option>';
+  if (opts.indexOf(outer) >= 0) sel.value = outer;
+  $('r_mapHint').textContent = '已选渠道 ' + channelLabel(ch) +
+    '，右侧为该渠道可用的模型名（' + opts.length + ' 个）；不需要映射就选「（跟随对外模型名）」。';
+}
+
 function addRouteMap() {
   const ch = $('r_mapChannel').value;
   if (!ch) return toast('请先选择渠道', true);
   if (routeMaps.some(m => m.channel === ch)) return toast('该渠道已有映射', true);
-  routeMaps.push({channel: ch, model: $('r_mapModel').value.trim(), custom: false});
-  $('r_mapModel').value = '';
+  let v = $('r_mapPickModel').value;
+  let custom = false;
+  if (v === '__custom__') {
+    v = (prompt('请输入 ' + ch + ' 上的真实模型名：') || '').trim();
+    if (!v) return;
+    custom = true;
+  }
+  routeMaps.push({channel: ch, model: v, custom: custom});
   renderRouteMaps();
+  onMapChannelChange();
 }
 
 function removeRouteMap(i) {
@@ -621,7 +649,6 @@ async function openRouteDlg(model) {
   routeMaps = [];
   $('r_model_custom').value = '';
   $('r_enabled').value = 'true';
-  $('r_mapModel').value = '';
   if (!window.__channels) window.__channels = await api('/admin/channels');
   fillChannelSelects();
   let routes = window.__routes || [];
