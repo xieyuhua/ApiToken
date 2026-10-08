@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>设置 · apitoken</title>
+<link rel="stylesheet" href="/static/style.css" />
+<style>
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+  .keys textarea{min-height:96px;font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+  .saved{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;opacity:0;transition:opacity .4s}
+  .saved.on{opacity:1}
+  .warnbox{border:1px solid #5c4a22;background:#2b2413;border-radius:8px;padding:10px 12px;font-size:12.5px;color:#e3c27a}
+  .ro{color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ apitoken</h1>
+  <nav>
+    <a href="/">控制台</a>
+    <a href="/logs">调用日志</a>
+    <a href="/diagnostics">测试</a>
+    <a href="/chat">对话</a>
+    <a href="/settings" class="active">设置</a>
+  </nav>
+  <span class="tag" id="ver">-</span>
+  <span class="sp"></span>
+  <input id="token" placeholder="管理令牌 adm-xxx" style="width:190px" />
+  <button class="ghost" onclick="saveToken()">保存</button>
+  <button class="ghost" onclick="load()">重新载入</button>
+</header>
+
+<main>
+  <div class="row" style="margin-bottom:14px">
+    <button onclick="save()">保存并生效</button>
+    <button class="ghost" onclick="resetKeys()">重置密钥输入框</button>
+    <span class="muted" id="saveHint"><span class="saved" id="savedDot"></span>所有可编辑项保存后立即生效，并写回配置文件</span>
+  </div>
+
+  <section>
+    <h2>接入密钥<span class="sp"></span><span class="muted" style="font-size:12px">客户端调用网关与访问管理接口的凭证</span></h2>
+    <div class="pad">
+      <div class="grid2">
+        <div class="keys">
+          <label>网关密钥（client_keys，一行一个；客户端用 Authorization: Bearer &lt;key&gt;）</label>
+          <textarea id="clientKeys" rows="4" spellcheck="false"></textarea>
+          <p class="hint" id="keysHint">当前生效：-</p>
+        </div>
+        <div>
+          <label>管理令牌（admin_token，访问 /admin/* 需 X-Admin-Token）</label>
+          <div class="row" style="gap:6px">
+            <input id="adminToken" type="password" placeholder="留空表示不修改" />
+            <button class="mini ghost" onclick="togglePwd()">显示</button>
+            <button class="mini ghost" onclick="genToken()">随机生成</button>
+          </div>
+          <p class="hint" id="adminHint">当前生效：-</p>
+          <div class="warnbox" style="margin-top:10px">
+            修改后立即生效：若修改了管理令牌，请把新令牌填入右上角并保存，否则会被拒之门外。
+            对话测试页使用的网关密钥若被删除，需要重新填写。
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>路由与重试</h2>
+    <div class="pad grid2">
+      <div>
+        <label>路由策略</label>
+        <select id="strategy">
+          <option value="priority_round_robin">按优先级分组 + 组内加权轮询</option>
+          <option value="round_robin">全局加权轮询</option>
+          <option value="failover">严格按优先级（主备）</option>
+          <option value="random">随机</option>
+        </select>
+      </div>
+      <div>
+        <label>最大尝试渠道数（max_attempts）</label>
+        <input id="maxAttempts" type="number" min="1" max="10" />
+        <p class="hint">单个请求最多尝试几个渠道，1 表示不故障转移</p>
+      </div>
+      <div style="grid-column:1/-1">
+        <label>触发重试（切换下一个渠道）的状态码</label>
+        <div class="row" id="retryBox"></div>
+        <p class="hint">4xx（如 401 Key 失效）通常属于配置错误，默认不重试</p>
+      </div>
+      <div>
+        <label>流式请求自动统计 token</label>
+        <select id="forceStreamUsage"><option value="true">开启</option><option value="false">关闭</option></select>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>日志</h2>
+    <div class="pad grid2">
+      <div>
+        <label>控制台访问日志</label>
+        <select id="accessLog"><option value="true">输出</option><option value="false">关闭</option></select>
+      </div>
+      <div>
+        <label>内存保留条数（keep_logs）</label>
+        <input id="keepLogs" type="number" min="10" step="50" />
+        <p class="hint">调用日志页与聚合统计的容量，重启后清空</p>
+      </div>
+      <div>
+        <label>记录请求/响应摘要</label>
+        <select id="recordPayload"><option value="false">关闭（推荐）</option><option value="true">开启</option></select>
+        <p class="hint">开启后调用日志会保存内容，可能含敏感信息</p>
+      </div>
+      <div>
+        <label>摘要最大字符数</label>
+        <input id="payloadLimit" type="number" min="100" step="100" />
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>超时与出网</h2>
+    <div class="pad grid2">
+      <div>
+        <label>非流式请求超时（秒）</label>
+        <input id="requestTimeout" type="number" min="1" />
+      </div>
+      <div>
+        <label>流式请求超时（秒）</label>
+        <input id="streamTimeout" type="number" min="1" />
+      </div>
+      <div style="grid-column:1/-1">
+        <label>上游代理（proxy_url）</label>
+        <input id="proxyUrl" placeholder="留空=遵循 HTTP_PROXY/HTTPS_PROXY；none=强制直连；或填 http://127.0.0.1:7890" />
+        <p class="hint">修改后新建的上游连接生效（已建立的连接会复用旧设置）</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>只读信息<span class="sp"></span><span class="ro">以下项需重启进程才会生效</span></h2>
+    <div class="pad">
+      <div class="kv" id="metaBox"></div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/app.js"></script>
+<script>
+const RETRY_OPTS = [400, 401, 403, 404, 408, 409, 425, 429, 500, 502, 503, 504, 529];
+let current = null;
+
+function renderRetryBoxes(list) {
+  $('retryBox').innerHTML = RETRY_OPTS.map(c =>
+    '<label style="display:inline-flex;align-items:center;gap:5px;margin:0;padding:4px 9px;border:1px solid var(--border);border-radius:6px;cursor:pointer">' +
+    '<input type="checkbox" class="rchk" value="' + c + '" style="width:auto"' + (list.includes(c) ? ' checked' : '') + ' /> ' + c + '</label>').join('');
+}
+
+async function load() {
+  try {
+    const d = await api('/admin/settings');
+    current = d;
+    const s = d.settings;
+    $('ver').textContent = 'v' + d.meta.version + ' · 运行 ' + d.meta.uptime;
+    $('clientKeys').value = '';
+    $('keysHint').textContent = '当前生效 ' + s.client_keys.length + ' 个：' + s.client_keys.join('、') + '（出于安全不回显，留空表示不修改）';
+    $('adminHint').textContent = '当前生效：' + (d.admin_token_set ? s.admin_token + '（留空表示不修改）' : '未设置，管理接口无鉴权');
+    $('adminToken').placeholder = d.admin_token_set ? '留空表示不修改' : '未设置';
+    $('strategy').value = s.strategy;
+    $('maxAttempts').value = s.max_attempts;
+    $('forceStreamUsage').value = String(s.force_stream_usage);
+    renderRetryBoxes(s.retry_status || []);
+    $('accessLog').value = String(s.access_log);
+    $('keepLogs').value = s.keep_logs;
+    $('recordPayload').value = String(s.record_payload);
+    $('payloadLimit').value = s.payload_limit;
+    $('requestTimeout').value = s.request_timeout;
+    $('streamTimeout').value = s.stream_timeout;
+    $('proxyUrl').value = s.proxy_url || '';
+    $('metaBox').innerHTML =
+      row('监听地址', esc(d.meta.addr) + '（需重启）') +
+      row('配置文件', esc(d.meta.config_file) + '（保存会写回此文件）') +
+      row('数据文件', esc(d.meta.data_file)) +
+      row('热更新字段', d.meta.hot_fields.map(esc).join('、')) +
+      row('需重启字段', d.meta.restart_needed.map(esc).join('、'));
+  } catch (e) { toast(e.message, true); }
+}
+
+function row(k, v) { return '<span class="k">' + k + '</span><span class="mono">' + v + '</span>'; }
+
+function resetKeys() {
+  $('clientKeys').value = '';
+  $('adminToken').value = '';
+  toast('已清空输入框（保存时不会修改）');
+}
+
+function togglePwd() {
+  const el = $('adminToken');
+  el.type = el.type === 'password' ? 'text' : 'password';
+}
+
+function genToken() {
+  const a = new Uint8Array(12);
+  crypto.getRandomValues(a);
+  $('adminToken').value = 'adm-' + Array.from(a).map(b => b.toString(16).padStart(2, '0')).join('');
+  $('adminToken').type = 'text';
+}
+
+async function save() {
+  const keys = $('clientKeys').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const body = {
+    client_keys: keys.length ? keys : null,
+    admin_token: $('adminToken').value.trim(),
+    strategy: $('strategy').value,
+    max_attempts: +$('maxAttempts').value,
+    force_stream_usage: $('forceStreamUsage').value === 'true',
+    retry_status: Array.from(document.querySelectorAll('.rchk:checked')).map(el => +el.value),
+    access_log: $('accessLog').value === 'true',
+    keep_logs: +$('keepLogs').value,
+    record_payload: $('recordPayload').value === 'true',
+    payload_limit: +$('payloadLimit').value,
+    request_timeout: +$('requestTimeout').value,
+    stream_timeout: +$('streamTimeout').value,
+    proxy_url: $('proxyUrl').value.trim()
+  };
+  try {
+    const r = await api('/admin/settings', {method: 'POST', body: JSON.stringify(body)});
+    // 管理令牌变更时同步本地保存的令牌，避免把自己锁在门外
+    if (r.admin_token_new && r.admin_token) {
+      $('token').value = r.admin_token;
+      localStorage.setItem('apitoken_admin', r.admin_token);
+    }
+    const dot = $('savedDot');
+    dot.classList.add('on');
+    setTimeout(() => dot.classList.remove('on'), 1600);
+    const notes = [];
+    if (r.admin_token_new) notes.push('管理令牌已更新，请牢记新令牌');
+    if (r.client_keys_new) notes.push('网关密钥已更新，对话页可能需要重新填写');
+    notes.push('已写回 ' + r.persist);
+    toast('保存成功：' + notes.join('；'), false);
+    load();
+  } catch (e) { toast(e.message, true); }
+}
+
+initToken();
+load();
+</script>
+</body>
+</html>

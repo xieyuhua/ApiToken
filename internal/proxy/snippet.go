@@ -18,11 +18,11 @@ func (h *Handler) payloadLimit() int {
 	if h.cfg.Logging.PayloadLimit <= 0 {
 		return 2000
 	}
-	return h.cfg.Logging.PayloadLimit
+	return h.cfg.RT().PayloadLimit
 }
 
 // recordPayload 是否记录请求/响应摘要。
-func (h *Handler) recordPayload() bool { return h.cfg.Logging.RecordPayload }
+func (h *Handler) recordPayload() bool { return h.cfg.RT().RecordPayload }
 
 // requestSnippet 生成请求摘要：模型 + 最后一条消息内容。
 func (h *Handler) requestSnippet(payload map[string]any) string {

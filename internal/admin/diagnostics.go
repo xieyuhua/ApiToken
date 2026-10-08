@@ -139,37 +139,38 @@ func (h *Handler) diagnosticsRun(w http.ResponseWriter, r *http.Request) {
 // buildChecks 静态配置自检。
 func (h *Handler) buildChecks() []Check {
 	cfg := h.cfg
+	rt := cfg.RT()
 	var out []Check
 	add := func(group, name, level, detail, fix string) {
 		out = append(out, Check{Group: group, Name: name, Level: level, Detail: detail, Fix: fix})
 	}
 
 	// 鉴权
-	if len(cfg.Security.ClientKeys) == 0 {
+	if len(rt.ClientKeys) == 0 {
 		add("config", "客户端密钥", LevelWarn, "未配置 client_keys，知道地址即可调用网关", "在 config.yaml 的 security.client_keys 中配置至少一个密钥")
 	} else {
 		add("config", "客户端密钥", LevelPass, fmt.Sprintf("已配置 %d 个", len(cfg.Security.ClientKeys)), "")
 	}
-	if cfg.Security.AdminToken == "" {
+	if rt.AdminToken == "" {
 		add("config", "管理令牌", LevelWarn, "未配置 admin_token，管理接口无鉴权", "配置 security.admin_token 保护 /admin/*")
 	} else {
 		add("config", "管理令牌", LevelPass, "已配置", "")
 	}
 
 	// 路由策略
-	switch cfg.Routing.Strategy {
+	switch rt.Strategy {
 	case "priority_round_robin", "round_robin", "failover", "random":
-		add("config", "路由策略", LevelPass, cfg.Routing.Strategy, "")
+		add("config", "路由策略", LevelPass, rt.Strategy, "")
 	default:
-		add("config", "路由策略", LevelFail, "未知策略 "+cfg.Routing.Strategy, "可选：priority_round_robin / round_robin / failover / random")
+		add("config", "路由策略", LevelFail, "未知策略 "+rt.Strategy, "可选：priority_round_robin / round_robin / failover / random")
 	}
-	if cfg.Routing.MaxAttempts <= 1 {
+	if rt.MaxAttempts <= 1 {
 		add("config", "故障转移", LevelWarn, "max_attempts=1，渠道失败不会切换到下一个", "建议设为 2~3")
 	} else {
-		add("config", "故障转移", LevelPass, fmt.Sprintf("最多尝试 %d 个渠道", cfg.Routing.MaxAttempts), "")
+		add("config", "故障转移", LevelPass, fmt.Sprintf("最多尝试 %d 个渠道", rt.MaxAttempts), "")
 	}
 	has5xx := false
-	for _, s := range cfg.Routing.RetryStatus {
+	for _, s := range rt.RetryStatus {
 		if s >= 500 {
 			has5xx = true
 		}
@@ -177,7 +178,7 @@ func (h *Handler) buildChecks() []Check {
 	if !has5xx {
 		add("config", "重试状态码", LevelWarn, "未包含任何 5xx，上游 5xx 不会触发切换", "在 routing.retry_status 中加入 500/502/503/504")
 	} else {
-		add("config", "重试状态码", LevelPass, fmt.Sprintf("%v", cfg.Routing.RetryStatus), "")
+		add("config", "重试状态码", LevelPass, fmt.Sprintf("%v", rt.RetryStatus), "")
 	}
 
 	// 渠道
@@ -277,25 +278,25 @@ func (h *Handler) buildChecks() []Check {
 	} else {
 		add("storage", "渠道持久化", LevelWarn, "尚无 data/gateway.json，将在首次变更时生成", "")
 	}
-	if cfg.Logging.KeepLogs < 100 {
-		add("logging", "日志容量", LevelWarn, fmt.Sprintf("keep_logs=%d 偏小", cfg.Logging.KeepLogs), "建议 500~2000")
+	if rt.KeepLogs < 100 {
+		add("logging", "日志容量", LevelWarn, fmt.Sprintf("keep_logs=%d 偏小", rt.KeepLogs), "建议 500~2000")
 	} else {
-		add("logging", "日志容量", LevelPass, fmt.Sprintf("内存保留 %d 条调用日志", cfg.Logging.KeepLogs), "")
+		add("logging", "日志容量", LevelPass, fmt.Sprintf("内存保留 %d 条调用日志", rt.KeepLogs), "")
 	}
-	if !cfg.Logging.AccessLog {
+	if !rt.AccessLog {
 		add("logging", "访问日志", LevelWarn, "access_log=false，控制台不输出访问日志", "排查问题时建议开启")
 	}
-	if cfg.Logging.RecordPayload {
+	if rt.RecordPayload {
 		add("logging", "载荷记录", LevelWarn, "record_payload=true，日志会记录请求/响应内容（可能含敏感信息）", "生产环境建议关闭")
 	}
 
 	// 网络
 	proxyMode := "跟随环境变量 HTTP_PROXY/HTTPS_PROXY"
-	if p := strings.TrimSpace(cfg.Upstream.ProxyURL); p != "" {
+	if p := strings.TrimSpace(rt.ProxyURL); p != "" {
 		proxyMode = "proxy_url = " + p
 	}
 	add("network", "出网代理", LevelPass, proxyMode, "")
-	if cfg.Server.StreamTimeout.D() <= 0 {
+	if rt.StreamTimeout <= 0 {
 		add("network", "流式超时", LevelWarn, "stream_timeout 未配置", "建议 300s 以上")
 	}
 	return out

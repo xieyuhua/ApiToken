@@ -109,6 +109,10 @@ type upstreamError struct {
 	Body      []byte
 	Transport error
 	ChannelID string
+	// Endpoint 实际请求的上游地址
+	Endpoint string
+	// UpstreamModel 发往上游的模型名
+	UpstreamModel string
 }
 
 func (e *upstreamError) Error() string {
@@ -238,12 +242,17 @@ func timeoutFor(cfg *config.Config, ch model.Channel, stream bool) time.Duration
 		return time.Duration(ch.TimeoutSec) * time.Second
 	}
 	if stream {
-		return cfg.Server.StreamTimeout.D()
+		if n := cfg.RT().StreamTimeout; n > 0 {
+			return n
+		}
 	}
-	if cfg.Server.RequestTimeout.D() > 0 {
-		return cfg.Server.RequestTimeout.D()
+	if n := cfg.RT().RequestTimeout; n > 0 {
+		return n
 	}
-	return cfg.Upstream.DefaultTimeout.D()
+	if n := cfg.RT().DefaultTimeout; n > 0 {
+		return n
+	}
+	return 120 * time.Second
 }
 
 func truncate(s string, n int) string {

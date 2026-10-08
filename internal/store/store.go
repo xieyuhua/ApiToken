@@ -64,7 +64,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Store, error) {
 		health:   map[string]HealthInfo{},
 		usage:    map[string]*model.ModelUsage{},
 		rr:       map[string]*uint64{},
-		logs:     NewLogBuffer(cfg.Logging.KeepLogs),
+		logs:     NewLogBuffer(cfg.RT().KeepLogs),
 		started:  time.Now(),
 	}
 	if err := s.load(); err != nil {
@@ -340,7 +340,7 @@ func (s *Store) Candidates(name string) []model.Candidate {
 
 // orderCandidates 按配置策略排序候选（调用方需持读锁）。
 func (s *Store) orderCandidates(name string, list []model.Candidate) []model.Candidate {
-	strategy := s.cfg.Routing.Strategy
+	strategy := s.cfg.RT().Strategy
 	if len(list) <= 1 || strategy == "failover" {
 		sort.SliceStable(list, func(i, j int) bool { return list[i].Channel.Priority < list[j].Channel.Priority })
 		return list
@@ -636,6 +636,11 @@ func (s *Store) Health(id string) (HealthInfo, bool) {
 	defer s.mu.RUnlock()
 	h, ok := s.health[id]
 	return h, ok
+}
+
+// OnRuntimeChanged 配置热更新回调（目前用于调整日志容量）。
+func (s *Store) OnRuntimeChanged(rt *config.Runtime) {
+	s.logs.SetMax(rt.KeepLogs)
 }
 
 // AddLog 追加访问日志。

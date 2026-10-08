@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>对话测试 · apitoken</title>
+<link rel="stylesheet" href="/static/style.css" />
+<style>
+  .wrap{display:grid;grid-template-columns:270px 1fr;gap:16px;align-items:start}
+  .side{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px}
+  .side h3{margin:0 0 10px;font-size:13px;color:var(--muted);font-weight:500}
+  .side .field{margin-bottom:12px}
+  .chat{background:var(--panel);border:1px solid var(--border);border-radius:10px;display:flex;flex-direction:column;height:calc(100vh - 150px);min-height:520px}
+  .chat-head{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--panel2);border-radius:10px 10px 0 0}
+  .chat-body{flex:1;overflow:auto;padding:16px}
+  .msg{margin-bottom:16px;max-width:88%}
+  .msg .who{font-size:11px;color:var(--muted);margin-bottom:4px}
+  .bubble{padding:10px 13px;border-radius:10px;white-space:pre-wrap;word-break:break-word;font-size:13.5px;line-height:1.7}
+  .msg.user{margin-left:auto}
+  .msg.user .bubble{background:#16324f;border:1px solid #1f4b78}
+  .msg.bot .bubble{background:#0f141b;border:1px solid var(--border)}
+  .msg.err .bubble{background:#2b1113;border:1px solid #5c2222;color:#ffb3ae}
+  .msg .meta{font-size:11px;color:var(--muted);margin-top:5px;display:flex;gap:10px;flex-wrap:wrap}
+  .chat-foot{border-top:1px solid var(--border);padding:10px 12px}
+  .chat-foot textarea{resize:vertical;min-height:64px}
+  .hintline{font-size:11.5px;color:var(--muted);margin-top:6px;display:flex;gap:12px;flex-wrap:wrap}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:5px}
+  .dot.on{background:var(--ok)} .dot.off{background:var(--err)} .dot.wait{background:var(--warn)}
+  .cursor::after{content:'▌';color:var(--primary);animation:blink 1s steps(2) infinite}
+  @keyframes blink{50%{opacity:0}}
+  @media (max-width:900px){.wrap{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ apitoken</h1>
+  <nav>
+    <a href="/">控制台</a>
+    <a href="/logs">调用日志</a>
+    <a href="/diagnostics">测试</a>
+    <a href="/chat" class="active">对话</a>
+    <a href="/settings">设置</a>
+  </nav>
+  <span class="sp"></span>
+  <span class="tag" id="status"><span class="dot off"></span>未连接</span>
+</header>
+
+<main>
+  <div class="wrap">
+    <aside class="side">
+      <h3>连接</h3>
+      <div class="field">
+        <label>网关地址</label>
+        <input id="base" placeholder="http://127.0.0.1:8080" />
+      </div>
+      <div class="field">
+        <label>网关密钥（security.client_keys）</label>
+        <input id="key" type="password" placeholder="sk-gateway-0001" />
+        <div class="row" style="margin-top:6px">
+          <button class="mini ghost" onclick="saveConn()">保存</button>
+          <button class="mini" onclick="loadModels()">拉取模型</button>
+        </div>
+      </div>
+
+      <h3>请求参数</h3>
+      <div class="field">
+        <label>模型</label>
+        <select id="model"></select>
+      </div>
+      <div class="field">
+        <label>系统提示词（可选）</label>
+        <textarea id="system" rows="3" placeholder="你是一个helpful的助手"></textarea>
+      </div>
+      <div class="row">
+        <div class="field" style="flex:1">
+          <label>温度</label>
+          <input id="temp" type="number" step="0.1" min="0" max="2" value="0.7" />
+        </div>
+        <div class="field" style="flex:1">
+          <label>最大 tokens</label>
+          <input id="maxTok" type="number" min="16" value="1024" />
+        </div>
+      </div>
+      <div class="field">
+        <label>类型</label>
+        <select id="mode">
+          <option value="1">流式（SSE）</option>
+          <option value="0">非流式</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>测试提示词</label>
+        <div class="row" style="gap:6px">
+          <button class="mini ghost" onclick="quick('用一句话介绍你自己')">介绍</button>
+          <button class="mini ghost" onclick="quick('写一个 Python 快速排序')">写代码</button>
+          <button class="mini ghost" onclick="quick('1+1 等于几？只回答数字')">算术</button>
+        </div>
+      </div>
+      <button class="ghost" style="width:100%" onclick="clearChat()">清空对话</button>
+    </aside>
+
+    <section class="chat">
+      <div class="chat-head">
+        <b id="title">未选择模型</b>
+        <span class="sp" style="flex:1"></span>
+        <span class="muted" id="lastMeta"></span>
+        <button class="mini ghost" onclick="stopStream()">停止</button>
+      </div>
+      <div class="chat-body" id="body">
+        <div class="msg bot"><div class="bubble">填好左侧的网关地址与密钥后点「拉取模型」，然后开始对话。<br/>这里走的是网关对外的 <code>/v1/chat/completions</code>，等同于第三方客户端，可以直接验证网关是否可用。</div></div>
+      </div>
+      <div class="chat-foot">
+        <textarea id="input" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+        <div class="hintline">
+          <button onclick="send()">发送</button>
+          <span id="tip">Enter 发送 / Shift+Enter 换行</span>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/app.js"></script>
+<script src="/static/chat.js"></script>
+</body>
+</html>

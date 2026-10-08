@@ -1,4 +1,4 @@
-// Package config 负责加载与校验网关配置文件。
+// Package config 负责加载、校验、运行时热更新与持久化网关配置。
 package config
 
 import (
@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -38,6 +40,51 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 // D 转换为 time.Duration。
 func (d Duration) D() time.Duration { return time.Duration(d) }
 
+// MarshalYAML 序列化为 "300s" 这类可读字符串，避免写出纳秒整数。
+func (d Duration) MarshalYAML() (any, error) {
+	return time.Duration(d).String(), nil
+}
+
+// Runtime 运行时可热更新的配置集合。修改后无需重启即刻生效。
+type Runtime struct {
+	// 鉴权
+	ClientKeys []string
+	AdminToken string
+
+	// 路由
+	Strategy         string
+	MaxAttempts      int
+	RetryStatus      []int
+	ForceStreamUsage bool
+
+	// 日志
+	AccessLog     bool
+	KeepLogs      int
+	RecordPayload bool
+	PayloadLimit  int
+
+	// 超时
+	RequestTimeout time.Duration
+	StreamTimeout  time.Duration
+	MaxBodyBytes   int64
+	ConnectTimeout time.Duration
+	DefaultTimeout time.Duration
+
+	// 出网
+	ProxyURL string
+}
+
+// Clone 深拷贝运行时配置。
+func (r *Runtime) Clone() *Runtime {
+	if r == nil {
+		return &Runtime{}
+	}
+	cp := *r
+	cp.ClientKeys = append([]string(nil), r.ClientKeys...)
+	cp.RetryStatus = append([]int(nil), r.RetryStatus...)
+	return &cp
+}
+
 // Config 网关总配置。
 type Config struct {
 	Server   ServerConfig    `yaml:"server"`
@@ -48,7 +95,9 @@ type Config struct {
 	Routes   []model.Route   `yaml:"routes"`
 	Channels []model.Channel `yaml:"channels"`
 
-	path string
+	path    string
+	once    sync.Once
+	runtime atomic.Pointer[Runtime]
 }
 
 // ServerConfig 服务监听相关配置。
@@ -78,12 +127,11 @@ type RoutingConfig struct {
 
 // LoggingConfig 日志配置。
 type LoggingConfig struct {
-	Level     string `yaml:"level"`
-	AccessLog bool   `yaml:"access_log"`
-	KeepLogs  int    `yaml:"keep_logs"`
-	// RecordPayload 开启后在调用日志中记录请求/响应摘要（可能含敏感内容）
-	RecordPayload bool `yaml:"record_payload"`
-	PayloadLimit  int  `yaml:"payload_limit"`
+	Level         string `yaml:"level"`
+	AccessLog     bool   `yaml:"access_log"`
+	KeepLogs      int    `yaml:"keep_logs"`
+	RecordPayload bool   `yaml:"record_payload"`
+	PayloadLimit  int    `yaml:"payload_limit"`
 }
 
 // UpstreamConfig 上游 HTTP 客户端配置。
@@ -94,6 +142,23 @@ type UpstreamConfig struct {
 	MaxIdleConns   int      `yaml:"max_idle_conns"`
 	ProxyURL       string   `yaml:"proxy_url"`
 }
+
+// RT 返回当前生效的运行时配置（并发安全）。
+// 若 Config 是直接构造而非 Load 而来，这里按字段懒初始化一份默认值。
+func (c *Config) RT() *Runtime {
+	c.once.Do(func() {
+		if c.runtime.Load() == nil {
+			c.runtime.Store(c.runtimeFromFields())
+		}
+	})
+	if rt := c.runtime.Load(); rt != nil {
+		return rt
+	}
+	return &Runtime{}
+}
+
+// ApplyRuntime 原子替换运行时配置（保存即生效）。
+func (c *Config) ApplyRuntime(rt *Runtime) { c.runtime.Store(rt.Clone()) }
 
 // DataFile 渠道/路由持久化文件路径。
 func (c *Config) DataFile() string {
@@ -121,7 +186,63 @@ func Load(path string) (*Config, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+	cfg.ApplyRuntime(cfg.runtimeFromFields())
 	return cfg, nil
+}
+
+// runtimeFromFields 从配置字段构造运行时配置。
+func (c *Config) runtimeFromFields() *Runtime {
+	rt := &Runtime{
+		ClientKeys:       append([]string(nil), c.Security.ClientKeys...),
+		AdminToken:       c.Security.AdminToken,
+		Strategy:         c.Routing.Strategy,
+		MaxAttempts:      c.Routing.MaxAttempts,
+		RetryStatus:      append([]int(nil), c.Routing.RetryStatus...),
+		ForceStreamUsage: c.Routing.ForceStreamUsage,
+		AccessLog:        c.Logging.AccessLog,
+		KeepLogs:         c.Logging.KeepLogs,
+		RecordPayload:    c.Logging.RecordPayload,
+		PayloadLimit:     c.Logging.PayloadLimit,
+		RequestTimeout:   c.Server.RequestTimeout.D(),
+		StreamTimeout:    c.Server.StreamTimeout.D(),
+		MaxBodyBytes:     int64(c.Server.MaxBodyMB) << 20,
+		ConnectTimeout:   c.Upstream.ConnectTimeout.D(),
+		DefaultTimeout:   c.Upstream.DefaultTimeout.D(),
+		ProxyURL:         c.Upstream.ProxyURL,
+	}
+	if rt.MaxAttempts <= 0 {
+		rt.MaxAttempts = 3
+	}
+	if rt.KeepLogs <= 0 {
+		rt.KeepLogs = 1000
+	}
+	if rt.PayloadLimit <= 0 {
+		rt.PayloadLimit = 2000
+	}
+	if rt.MaxBodyBytes <= 0 {
+		rt.MaxBodyBytes = 32 << 20
+	}
+	if rt.Strategy == "" {
+		rt.Strategy = "priority_round_robin"
+	}
+	return rt
+}
+
+// syncFields 把运行时配置写回配置字段（供持久化使用）。
+func (c *Config) syncFields(rt *Runtime) {
+	c.Security.ClientKeys = append([]string(nil), rt.ClientKeys...)
+	c.Security.AdminToken = rt.AdminToken
+	c.Routing.Strategy = rt.Strategy
+	c.Routing.MaxAttempts = rt.MaxAttempts
+	c.Routing.RetryStatus = append([]int(nil), rt.RetryStatus...)
+	c.Routing.ForceStreamUsage = rt.ForceStreamUsage
+	c.Logging.AccessLog = rt.AccessLog
+	c.Logging.KeepLogs = rt.KeepLogs
+	c.Logging.RecordPayload = rt.RecordPayload
+	c.Logging.PayloadLimit = rt.PayloadLimit
+	c.Server.RequestTimeout = Duration(rt.RequestTimeout)
+	c.Server.StreamTimeout = Duration(rt.StreamTimeout)
+	c.Upstream.ProxyURL = rt.ProxyURL
 }
 
 func (c *Config) applyDefaults() {
@@ -198,14 +319,159 @@ func (c *Config) validate() error {
 		if r.Model == "" {
 			return fmt.Errorf("routes[%d] 缺少 model", i)
 		}
-		for _, cid := range r.Channels {
-			if !ids[cid] {
-				return fmt.Errorf("route %s 引用了不存在的渠道 %s", r.Model, cid)
-			}
-		}
 	}
 	if err := os.MkdirAll(c.Server.DataDir, 0o755); err != nil {
 		return fmt.Errorf("创建数据目录失败: %w", err)
 	}
 	return nil
+}
+
+// saveView 持久化到 config.yaml 的部分（渠道与路由由 data/gateway.json 管理，不在此覆盖）。
+type saveView struct {
+	Server   ServerConfig   `yaml:"server"`
+	Security SecurityConfig `yaml:"security"`
+	Routing  RoutingConfig  `yaml:"routing"`
+	Logging  LoggingConfig  `yaml:"logging"`
+	Upstream UpstreamConfig `yaml:"upstream"`
+}
+
+// Save 把运行时配置写回 config.yaml。
+// 采用 yaml.Node 增量合并，尽量保留原文件中的注释与未涉及的字段。
+func Save(c *Config) error {
+	if c.path == "" {
+		return fmt.Errorf("配置路径未知，无法保存")
+	}
+	rt := c.RT()
+	view := saveView{
+		Server:   c.Server,
+		Security: SecurityConfig{ClientKeys: append([]string(nil), rt.ClientKeys...), AdminToken: rt.AdminToken},
+		Routing: RoutingConfig{
+			Strategy: rt.Strategy, MaxAttempts: rt.MaxAttempts,
+			ForceStreamUsage: rt.ForceStreamUsage, RetryStatus: append([]int(nil), rt.RetryStatus...),
+		},
+		Logging: LoggingConfig{
+			Level: c.Logging.Level, AccessLog: rt.AccessLog, KeepLogs: rt.KeepLogs,
+			RecordPayload: rt.RecordPayload, PayloadLimit: rt.PayloadLimit,
+		},
+		Upstream: c.Upstream,
+	}
+	view.Upstream.ProxyURL = rt.ProxyURL
+	view.Server.RequestTimeout = Duration(rt.RequestTimeout)
+	view.Server.StreamTimeout = Duration(rt.StreamTimeout)
+
+	oldData, err := os.ReadFile(c.path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("读取原配置失败: %w", err)
+	}
+
+	newNode := &yaml.Node{}
+	if err := nodeFrom(view, newNode); err != nil {
+		return err
+	}
+
+	merged := newNode
+	if len(oldData) > 0 {
+		oldNode := &yaml.Node{}
+		if err := yaml.Unmarshal(oldData, oldNode); err != nil {
+			// 原文件解析失败时直接覆盖
+			oldNode = nil
+		} else {
+			merged = mergeNode(oldNode, newNode)
+		}
+	}
+
+	out, err := marshalNode(merged)
+	if err != nil {
+		return err
+	}
+	tmp := c.path + ".tmp"
+	if err := os.WriteFile(tmp, out, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, c.path)
+}
+
+func nodeFrom(v any, out *yaml.Node) error {
+	b, err := yaml.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return yaml.Unmarshal(b, out)
+}
+
+func marshalNode(n *yaml.Node) ([]byte, error) {
+	var sb strings.Builder
+	enc := yaml.NewEncoder(&sb)
+	enc.SetIndent(2)
+	if err := enc.Encode(n); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return []byte(sb.String()), nil
+}
+
+// mergeNode 以 old 为基底，用 new 覆盖同名标量/集合，并保留 old 的注释。
+func mergeNode(old, new *yaml.Node) *yaml.Node {
+	if old == nil {
+		return new
+	}
+	if new == nil {
+		return old
+	}
+	// 解开 document 节点
+	if old.Kind == yaml.DocumentNode && len(old.Content) > 0 {
+		old = old.Content[0]
+	}
+	if new.Kind == yaml.DocumentNode && len(new.Content) > 0 {
+		new = new.Content[0]
+	}
+	if old.Kind != yaml.MappingNode || new.Kind != yaml.MappingNode {
+		return new
+	}
+	for i := 0; i+1 < len(new.Content); i += 2 {
+		key := new.Content[i]
+		val := new.Content[i+1]
+		found := false
+		for j := 0; j+1 < len(old.Content); j += 2 {
+			if old.Content[j].Value == key.Value {
+				oldVal := old.Content[j+1]
+				merged := mergeValue(oldVal, val)
+				// 继承原注释
+				merged.HeadComment = firstNonEmptyStr(oldVal.HeadComment, val.HeadComment)
+				merged.LineComment = firstNonEmptyStr(oldVal.LineComment, val.LineComment)
+				merged.FootComment = firstNonEmptyStr(oldVal.FootComment, val.FootComment)
+				old.Content[j+1] = merged
+				found = true
+				break
+			}
+		}
+		if !found {
+			old.Content = append(old.Content, key, val)
+		}
+	}
+	return old
+}
+
+func mergeValue(old, new *yaml.Node) *yaml.Node {
+	// 值为空（零值被省略）时保留原值
+	if new.Tag == "!!null" {
+		return old
+	}
+	if old.Kind == yaml.ScalarNode && new.Kind == yaml.ScalarNode && old.Value == new.Value {
+		return old
+	}
+	if old.Kind == yaml.SequenceNode && new.Kind == yaml.SequenceNode {
+		// 序列整体替换，但保留原注释
+		return new
+	}
+	return new
+}
+
+func firstNonEmptyStr(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }

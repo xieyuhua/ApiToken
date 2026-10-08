@@ -32,6 +32,8 @@ func New(st *store.Store, cfg *config.Config, log *slog.Logger) *Handler {
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/api-info", h.apiInfo)
 	mux.HandleFunc("GET /admin/config", h.getConfig)
+	mux.HandleFunc("GET /admin/settings", h.getSettings)
+	mux.HandleFunc("POST /admin/settings", h.updateSettings)
 
 	mux.HandleFunc("GET /admin/channels", h.listChannels)
 	mux.HandleFunc("POST /admin/channels", h.createChannel)

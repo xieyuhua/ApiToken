@@ -53,7 +53,20 @@ func (b *LogBuffer) Snapshot() []model.LogEntry {
 	return b.List(0)
 }
 
-// Count 当前保留条数。
+// SetMax 动态调整保留条数（保留最近的 max 条）。
+func (b *LogBuffer) SetMax(max int) {
+	if max <= 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.max = max
+	if len(b.buf) > max {
+		b.buf = append([]model.LogEntry(nil), b.buf[len(b.buf)-max:]...)
+	}
+}
+
+// Count 当前保留条数.
 func (b *LogBuffer) Count() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()

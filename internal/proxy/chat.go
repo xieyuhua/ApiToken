@@ -18,21 +18,27 @@ import (
 
 // Handler OpenAI 兼容代理。
 type Handler struct {
-	store   *store.Store
-	cfg     *config.Config
-	log     *slog.Logger
-	client  *Client
-	maxBody int64
+	store  *store.Store
+	cfg    *config.Config
+	log    *slog.Logger
+	client *Client
+}
+
+// currentMaxBody 当前允许的请求体上限（支持运行时调整）。
+func (h *Handler) currentMaxBody() int64 {
+	if n := h.cfg.RT().MaxBodyBytes; n > 0 {
+		return n
+	}
+	return 32 << 20
 }
 
 // NewHandler 构造代理处理器。
 func NewHandler(st *store.Store, cfg *config.Config, log *slog.Logger) *Handler {
 	return &Handler{
-		store:   st,
-		cfg:     cfg,
-		log:     log,
-		client:  NewClient(cfg),
-		maxBody: int64(cfg.Server.MaxBodyMB) << 20,
+		store:  st,
+		cfg:    cfg,
+		log:    log,
+		client: NewClient(cfg),
 	}
 }
 
@@ -53,7 +59,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	raw, err := io.ReadAll(io.LimitReader(r.Body, h.maxBody))
+	raw, err := io.ReadAll(io.LimitReader(r.Body, h.currentMaxBody()))
 	if err != nil {
 		WriteError(w, http.StatusBadRequest, "read_body_failed", "读取请求体失败: "+err.Error(), "")
 		return
@@ -84,7 +90,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := h.cfg.Routing.MaxAttempts
+	limit := h.cfg.RT().MaxAttempts
 	if limit <= 0 || limit > len(candidates) {
 		limit = len(candidates)
 	}
@@ -129,7 +135,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		attemptEntry.ResponseSnippet = res.Snippet
 		h.finish(attemptEntry)
 
-		if !uerr.retryable(h.cfg.Routing.RetryStatus) {
+		if !uerr.retryable(h.cfg.RT().RetryStatus) {
 			break
 		}
 		if r.Context().Err() != nil {
@@ -155,12 +161,21 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if lastErr.Transport != nil && r.Context().Err() == nil {
+		if lastErr.ChannelID != "" {
+			w.Header().Set("X-Gateway-Channel", lastErr.ChannelID)
+		}
 		WriteError(w, http.StatusBadGateway, "upstream_error", lastErr.Error(), "")
 		return
 	}
 	// 透传上游错误体，便于排查（如 401 key 无效、429 限流）
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("X-Request-Id", reqID)
+	if lastErr.ChannelID != "" {
+		w.Header().Set("X-Gateway-Channel", lastErr.ChannelID)
+	}
+	if lastErr.UpstreamModel != "" {
+		w.Header().Set("X-Gateway-Upstream-Model", lastErr.UpstreamModel)
+	}
 	w.WriteHeader(lastErr.Status)
 	body := lastErr.Body
 	if len(body) == 0 {
@@ -171,9 +186,8 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 // attempt 向单个渠道发起请求，成功时写出响应（返回用量与摘要信息）。
 func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, reqID string, cand model.Candidate,
-	payload map[string]any, stream bool) (relayResult, *upstreamError) {
+	payload map[string]any, stream bool) (res relayResult, uerr *upstreamError) {
 
-	var res relayResult
 	timeout := timeoutFor(h.cfg, cand.Channel, stream)
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
@@ -184,6 +198,13 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, reqID string, 
 	}
 	req.Header.Set("X-Request-Id", reqID)
 	res.Endpoint = req.URL.String()
+	defer func() {
+		if uerr != nil {
+			uerr.ChannelID = cand.ID
+			uerr.Endpoint = res.Endpoint
+			uerr.UpstreamModel = cand.UpstreamModel
+		}
+	}()
 
 	resp, err := h.client.Do(req)
 	if err != nil {
@@ -201,13 +222,13 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, reqID string, 
 	if stream {
 		res, rerr = h.relayStream(w, resp, cand, reqID)
 	} else {
-		res, rerr = h.relayJSON(w, resp, reqID)
+		res, rerr = h.relayJSON(w, resp, reqID, cand)
 	}
 	res.Endpoint = req.URL.String()
 	return res, rerr
 }
 
-func (h *Handler) relayJSON(w http.ResponseWriter, resp *http.Response, reqID string) (relayResult, *upstreamError) {
+func (h *Handler) relayJSON(w http.ResponseWriter, resp *http.Response, reqID string, cand model.Candidate) (relayResult, *upstreamError) {
 	var res relayResult
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -217,6 +238,9 @@ func (h *Handler) relayJSON(w http.ResponseWriter, resp *http.Response, reqID st
 	res.Snippet = h.responseSnippet(data)
 	w.Header().Set("Content-Type", pickCT(resp.Header.Get("Content-Type")))
 	w.Header().Set("X-Request-Id", reqID)
+	w.Header().Set("X-Gateway-Channel", cand.ID)
+	w.Header().Set("X-Gateway-Channel-Name", cand.Name)
+	w.Header().Set("X-Gateway-Upstream-Model", cand.UpstreamModel)
 	copyHeader(w.Header(), resp.Header, "Openai-Organization", "Openai-Processing-Ms", "X-Ratelimit-Limit-Requests", "X-Ratelimit-Remaining-Requests")
 	w.WriteHeader(resp.StatusCode)
 	if _, err := w.Write(data); err != nil {
@@ -298,7 +322,7 @@ func (h *Handler) finish(e model.LogEntry) {
 		e.Time = time.Now()
 	}
 	h.store.AddLog(e)
-	if h.cfg.Logging.AccessLog {
+	if h.cfg.RT().AccessLog {
 		h.log.Info("access",
 			"req", e.RequestID, "method", e.Method, "path", e.Path, "model", e.Model,
 			"channel", e.ChannelID, "stream", e.Stream,

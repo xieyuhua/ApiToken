@@ -85,6 +85,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /{$}", webui.Handler())
 	mux.Handle("GET /logs", webui.LogsHandler())
 	mux.Handle("GET /diagnostics", webui.DiagnosticsHandler())
+	mux.Handle("GET /chat", webui.ChatHandler())
+	mux.Handle("GET /settings", webui.SettingsHandler())
 	mux.Handle("GET /static/{file}", webui.StaticHandler())
 
 	return recoverMW(s.log, requestIDMW(securityHeaders(corsMW(mux))))
@@ -98,7 +100,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 // clientAuth 校验客户端调用密钥。
 func (s *Server) clientAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		keys := s.cfg.Security.ClientKeys
+		keys := s.cfg.RT().ClientKeys
 		if len(keys) == 0 {
 			next(w, r)
 			return
@@ -120,7 +122,7 @@ func (s *Server) clientAuth(next http.HandlerFunc) http.HandlerFunc {
 // AdminAuth 校验管理令牌（供网关自身使用）。
 func (s *Server) AdminAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := s.cfg.Security.AdminToken
+		token := s.cfg.RT().AdminToken
 		if token == "" {
 			next.ServeHTTP(w, r)
 			return
