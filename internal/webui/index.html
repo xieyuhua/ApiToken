@@ -143,6 +143,8 @@
     </div>
 
     <label style="margin-top:16px">模型映射（可选：各渠道上的真实模型名不同时使用）</label>
+    <p class="hint">一个渠道在本条路由里对应一个上游模型。若想让<strong>同一个渠道</strong>对外提供多个模型（例如 gpt-4o 用 A、claude-3 用 B），
+      为每个对外模型名各建一条路由即可 —— 在下方路由列表点「复制」可快速基于现有路由新建。</p>
     <div id="r_mapList"></div>
     <div class="row" style="margin-top:8px">
       <select id="r_mapChannel" style="flex:1" onchange="onMapChannelChange()"></select>
@@ -232,6 +234,7 @@ function renderRoutes(list) {
       <td><span class="pill ${r.enabled === false ? 'off' : 'on'}">${r.enabled === false ? '停用' : '启用'}</span></td>
       <td class="nowrap">
         <button class="mini ghost" onclick="openRouteDlg('${encodeURIComponent(r.model)}')">编辑</button>
+        <button class="mini ghost" title="以此路由为模板新建，可为同一渠道选另一个上游模型" onclick="copyRoute('${encodeURIComponent(r.model)}')">复制</button>
         <button class="mini danger" onclick="delRoute('${encodeURIComponent(r.model)}')">删除</button>
       </td>
     </tr>`).join('') || `<tr><td colspan="5" class="empty">暂无显式路由（使用渠道 models 自动路由）</td></tr>`;
@@ -543,20 +546,25 @@ function moveRouteChannel(i, delta) {
   renderRouteChannels();
 }
 
-/** 某渠道可选的上游模型名：本渠道 models 在前，其余网关已知模型在后 */
+/** 某渠道可选的上游模型名：只列该渠道自己声明的模型；
+ *  渠道未声明模型（放通全部）时，才退回网关已知模型兜底。 */
 function upstreamModelsFor(chId) {
-  const own = new Set();
   const ch = (window.__channels || []).find(c => c.id === chId);
-  if (ch) (ch.models || []).forEach(m => m && m !== '*' && own.add(m));
-
-  const all = new Set(knownModelNames());
+  const own = (ch ? ch.models || [] : []).filter(m => m && m !== '*');
+  if (own.length) {
+    return own.slice().sort();
+  }
+  // 渠道未限定模型：给出网关其他已知模型，避免无从下手
   const outer = routeModelValue();
-  const rest = Array.from(all).filter(m => !own.has(m)).sort();
+  const all = knownModelNames();
+  return (outer && all.indexOf(outer) >= 0 ? [outer] : [])
+    .concat(all.filter(m => m !== outer).sort());
+}
 
-  // 与对外模型名相同的候选置顶，省得翻列表
-  rest = rest.filter(m => m !== outer);
-  const list = Array.from(own).sort();
-  return (outer && all.has(outer) && !own.has(outer) ? [outer] : []).concat(list, rest);
+/** 该渠道是否声明了模型 */
+function channelOwnModels(chId) {
+  const ch = (window.__channels || []).find(c => c.id === chId);
+  return ch ? (ch.models || []).filter(m => m && m !== '*') : [];
 }
 
 function onRouteMapChange(i, v) {
@@ -580,23 +588,20 @@ function renderRouteMaps() {
     const opts = upstreamModelsFor(m.channel);
     const known = opts.indexOf(m.model) >= 0;
     const isCustom = m.model && !known;
-    const ch = (window.__channels || []).find(c => c.id === m.channel);
-    const ownCount = ch ? (ch.models || []).filter(x => x && x !== '*').length : 0;
+    const own = channelOwnModels(m.channel);
+    const groupLabel = own.length ? '该渠道的模型（' + own.length + '）' : '网关其他已知模型（该渠道未声明模型）';
     const sel =
       '<select class="mono" style="flex:1" onchange="onRouteMapChange(' + i + ', this.value)">' +
-        '<option value=""' + (!m.model ? ' selected' : '') + '>（跟随对外模型名，原样透传）</option>' +
-        (ownCount ? '<optgroup label="该渠道的模型">' +
-          opts.slice(0, ownCount).map(x => '<option value="' + esc(x) + '"' + (m.model === x ? ' selected' : '') + '>' + esc(x) + '</option>').join('') +
-          '</optgroup>' : '') +
-        (opts.length > ownCount ? '<optgroup label="网关其他已知模型">' +
-          opts.slice(ownCount).map(x => '<option value="' + esc(x) + '"' + (m.model === x ? ' selected' : '') + '>' + esc(x) + '</option>').join('') +
+        '<option value="">（跟随对外模型名，原样透传）</option>' +
+        (opts.length ? '<optgroup label="' + groupLabel + '">' +
+          opts.map(x => '<option value="' + esc(x) + '"' + (m.model === x ? ' selected' : '') + '>' + esc(x) + '</option>').join('') +
           '</optgroup>' : '') +
         '<option value="__custom__"' + (isCustom ? ' selected' : '') + '>其他…（手动输入）</option>' +
       '</select>';
     const customInput = isCustom
       ? '<input class="mono" value="' + esc(m.model) + '" style="flex:1" placeholder="输入该渠道上的真实模型名" oninput="routeMaps[' + i + '].model=this.value" />'
       : '';
-    const tip = opts.length ? '' : '<span class="muted" title="可在控制台渠道里点「拉取模型」补充">（下拉暂无候选，可选「其他…」输入）</span>';
+    const tip = opts.length ? '' : '<span class="muted">（该渠道未声明模型，请在渠道列表点「拉取模型」，或选「其他…」输入）</span>';
     return '<div class="row" style="margin-bottom:6px">' +
       '<span class="mono" style="flex:1">' + esc(channelLabel(m.channel)) + '</span>' +
       '<span class="muted">→</span>' + sel + customInput + tip +
@@ -605,28 +610,64 @@ function renderRouteMaps() {
   }).join('');
 }
 
+/** 填充模型下拉：用 DOM API 生成 option，避免特殊字符破坏 value */
+function fillModelOptions(sel, opts, current) {
+  sel.innerHTML = '';
+  const add = (label, value) => {
+    const o = document.createElement('option');
+    o.textContent = label;
+    o.value = value;
+    sel.appendChild(o);
+  };
+  add('（跟随对外模型名）', '');
+  opts.forEach(m => add(m, m));
+  add('其他…（手动输入）', '__custom__');
+  if (current && opts.indexOf(current) >= 0) sel.value = current;
+}
+
 /** 选择渠道后，列出该渠道可用的上游模型 */
-function onMapChannelChange() {
+async function onMapChannelChange() {
   const ch = $('r_mapChannel').value;
   const sel = $('r_mapPickModel');
-  const outer = routeModelValue();
+  const hint = $('r_mapHint');
   if (!ch) {
+    fillModelOptions(sel, [], '');
     sel.innerHTML = '<option value="">— ② 再选择模型 —</option>';
+    hint.textContent = '先选渠道，右侧会自动列出该渠道可用的模型名；不需要映射就选「（跟随对外模型名）」。';
     return;
   }
-  const opts = upstreamModelsFor(ch);
-  sel.innerHTML = '<option value="">（跟随对外模型名）</option>' +
-    opts.map(x => '<option value="' + esc(x) + '">' + esc(x) + '</option>').join('') +
-    '<option value="__custom__">其他…（手动输入）</option>';
-  if (opts.indexOf(outer) >= 0) sel.value = outer;
-  $('r_mapHint').textContent = '已选渠道 ' + channelLabel(ch) +
-    '，右侧为该渠道可用的模型名（' + opts.length + ' 个）；不需要映射就选「（跟随对外模型名）」。';
+
+  let opts = upstreamModelsFor(ch);
+  // 缓存里没有该渠道的模型时，直接现查渠道详情（保证拿到最新拉取的模型）
+  if (!opts.length) {
+    try {
+      const detail = await api('/admin/channels/' + encodeURIComponent(ch));
+      const models = (detail.models || []).filter(m => m && m !== '*');
+      const cached = (window.__channels || []).find(x => x.id === ch);
+      if (cached) cached.models = detail.models;
+      opts = models.concat(knownModelNames().filter(m => models.indexOf(m) < 0));
+    } catch (e) { /* 渠道可能已删除，下面会提示 */ }
+  }
+
+  fillModelOptions(sel, opts, routeModelValue());
+  const own = channelOwnModels(ch);
+  hint.classList.remove('err');
+  if (own.length) {
+    hint.textContent = '已选 ' + channelLabel(ch) + '，右侧为该渠道声明的 ' + own.length + ' 个模型；不需要映射就选「（跟随对外模型名）」。';
+  } else if (opts.length) {
+    hint.textContent = '已选 ' + channelLabel(ch) + '：该渠道未声明模型（放通全部），下面列出网关其他已知模型；建议先在渠道列表点「拉取模型」。';
+  } else {
+    hint.innerHTML = '该渠道未声明任何模型 —— 请先在「渠道」列表点它的 <b>拉取模型</b>，或选「其他…」手动输入。';
+    hint.classList.add('err');
+  }
 }
 
 function addRouteMap() {
   const ch = $('r_mapChannel').value;
   if (!ch) return toast('请先选择渠道', true);
-  if (routeMaps.some(m => m.channel === ch)) return toast('该渠道已有映射', true);
+  if (routeMaps.some(m => m.channel === ch)) {
+    return toast('该渠道已在本条路由中映射过（一条路由里一个渠道只对应一个上游模型）。若要同一渠道用多个上游模型，请为另一个对外模型名再建一条路由。', true);
+  }
   let v = $('r_mapPickModel').value;
   let custom = false;
   if (v === '__custom__') {
@@ -649,12 +690,13 @@ async function openRouteDlg(model) {
   routeMaps = [];
   $('r_model_custom').value = '';
   $('r_enabled').value = 'true';
-  if (!window.__channels) window.__channels = await api('/admin/channels');
+  // 始终取最新渠道/路由数据，避免缓存陈旧导致模型下拉为空
+  try {
+    window.__channels = await api('/admin/channels');
+    window.__routes = await api('/admin/routes');
+  } catch (e) { toast(e.message, true); }
   fillChannelSelects();
-  let routes = window.__routes || [];
-  if (!routes.length) {
-    try { routes = await api('/admin/routes'); window.__routes = routes; } catch (e) { routes = []; }
-  }
+  const routes = window.__routes || [];
   await loadKnownModelsFromLogs();
   fillModelSelect(model ? decodeURIComponent(model) : '');
 
@@ -671,6 +713,39 @@ async function openRouteDlg(model) {
   renderRouteChannels();
   renderRouteMaps();
   $('rtDlg').showModal();
+}
+
+/** 以现有路由为模板新建：保留渠道顺序，清空映射模型与对外名，由用户另选 */
+async function copyRoute(model) {
+  const src = decodeURIComponent(model);
+  try {
+    if (!window.__routes) window.__routes = await api('/admin/routes');
+    const rt = window.__routes.find(r => r.model === src);
+    routeChannels = [];
+    routeMaps = [];
+    if (rt) {
+      routeChannels = (rt.channels || []).slice();
+      routeMaps = Object.keys(rt.model_map || {}).map(ch => ({channel: ch, model: '', custom: false}));
+    }
+    $('r_model_custom').value = '';
+    $('r_enabled').value = 'true';
+    if (!window.__channels) window.__channels = await api('/admin/channels');
+    fillChannelSelects();
+    await loadKnownModelsFromLogs();
+    fillModelSelect('');
+
+    // 对外模型名留空，提示填写新的名字
+    $('r_model').value = '__custom__';
+    $('r_model_custom').style.display = '';
+    $('r_model_custom').value = '';
+    $('r_model_custom').placeholder = '新的对外模型名，如 gpt-4o / claude-3';
+    $('r_modelHint').textContent = '已复制路由 ' + src + ' 的渠道顺序，请填写新的对外模型名，并为各渠道选择该模型下的上游模型名。';
+
+    renderRouteChannels();
+    renderRouteMaps();
+    $('rtDlg').showModal();
+    $('r_model_custom').focus();
+  } catch (e) { toast(e.message, true); }
 }
 
 async function saveRoute() {
