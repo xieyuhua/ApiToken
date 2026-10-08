@@ -1,0 +1,8 @@
+{
+  "id": "dd",
+  "name": "下拉数据验证",
+  "base_url": "https://api.deepseek.com/v1",
+  "api_key": "sk-x",
+  "models": ["deepseek-chat", "deepseek-reasoner"],
+  "enabled": true
+}

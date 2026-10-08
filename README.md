@@ -176,6 +176,11 @@ client := openai.NewClientWithOptions("http://127.0.0.1:8080/v1", openai.WithTok
 
 ## 5. 路由与故障转移
 
+路由弹窗里全部是下拉/点选，无需手写 JSON：
+- **对外模型名**：下拉来自各渠道已声明的模型（含已有路由名），选「其他…」可自定义
+- **渠道顺序**：下拉添加 + ↑↓ 调整顺序，顺序即故障转移顺序
+- **模型映射**：某渠道上的真实模型名与对外名不一致时，从该渠道的模型下拉里选；不需要映射就选「（不映射，原样透传）」
+
 **优先级 1：显式路由（routes）** —— 一个对外模型名绑定有序渠道列表，严格按声明顺序尝试：
 
 ```yaml
@@ -186,7 +191,7 @@ routes:
       tencent-1: "gpt-4o-0613"                  # 该渠道上的真实模型名
 ```
 
-**优先级 2：自动路由** —— 未显式配置的模型，按各渠道 `models` / `alias` 字段匹配，再按 `routing.strategy` 排序：
+**优先级 2：自动路由** —— 未显式配置的模型，按各渠道 `models` 字段匹配，再按 `routing.strategy` 排序：
 
 | 策略 | 行为 |
 | --- | --- |
@@ -201,7 +206,6 @@ routes:
 
 - `auth_style`：`bearer`（默认）/ `header`（key 放进自定义头）/ `query`（`?key=`），配合 `auth_header` 使用
 
-- `alias`：`{"对外模型名": "上游模型名"}`，如把腾讯的 `deepseek-v3.2` 暴露成 `deepseek-chat`
 - `extra_params`：给该渠道固定注入参数（如 `{"thinking": {"type": "enabled"}}`）
 - `extra_headers`：附加请求头（如腾讯云企业 ID 头）
 - `timeout_sec`：单独的超时时间
@@ -275,7 +279,7 @@ upstream:
 Key 无效或未生效。DeepSeek、商汤、腾讯 WorkBuddy 的 Key 各自独立，注意不要混用；腾讯还需确认企业版套餐与 API Key 所属企业。
 
 **Q：模型名找不到（404 model_not_found）？**
-`GET /v1/models` 会列出网关当前能路由的模型；渠道 `models` 留空表示放通全部模型名（慎用），否则必须显式列出或配置 `alias`。
+`GET /v1/models` 会列出网关当前能路由的模型；渠道 `models` 留空表示放通全部模型名（慎用），否则必须显式列出。
 
 **Q：如何做主备？**
 同一个模型配两个渠道，`priority` 分别设 1 和 2，策略用 `failover`；或用显式 routes 按顺序声明。

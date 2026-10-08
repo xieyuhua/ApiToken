@@ -1,0 +1,8 @@
+{
+  "model": "gpt-4o",
+  "enabled": true,
+  "channels": ["route-demo", "deepseek-1"],
+  "model_map": {
+    "route-demo": "deepseek-reasoner"
+  }
+}

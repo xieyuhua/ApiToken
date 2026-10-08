@@ -29,7 +29,7 @@ logging:
   level: info
   access_log: true
   keep_logs: 800
-  record_payload: false
+  record_payload: true
   payload_limit: 2000
 upstream:
   default_timeout: 2m0s
@@ -91,4 +91,4 @@ channels:
     enabled: false
     note: "Coding Plan 订阅用 https://api.stepfun.com/step_plan/v1"
 ui:
-  theme: auto
+  theme: light

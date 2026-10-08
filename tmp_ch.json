@@ -1,0 +1,9 @@
+{
+  "id": "route-demo",
+  "name": "下拉选项验证",
+  "base_url": "https://api.deepseek.com/v1",
+  "api_key": "sk-x",
+  "models": ["deepseek-chat", "deepseek-reasoner"],
+  "alias": {"gpt-4o": "deepseek-chat"},
+  "enabled": true
+}
