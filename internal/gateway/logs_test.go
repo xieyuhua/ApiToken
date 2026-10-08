@@ -172,6 +172,32 @@ func TestFailoverTraceInLogs(t *testing.T) {
 	if page.Items[0].RequestID != page.Items[1].RequestID {
 		t.Fatal("同一次请求的多次尝试应共享 request_id")
 	}
+	// 调用链路详情必须按发生顺序返回：最早 -> 最新，最后一条是最终结果
+	reqDetail := httptest.NewRequest(http.MethodGet, "/admin/logs/"+page.Items[0].RequestID, nil)
+	reqDetail.Header.Set("X-Admin-Token", "adm-test")
+	recDetail := httptest.NewRecorder()
+	h.ServeHTTP(recDetail, reqDetail)
+	var detail struct {
+		Attempts []model.LogEntry `json:"attempts"`
+	}
+	if err := json.Unmarshal(recDetail.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("解析详情失败: %v", err)
+	}
+	if len(detail.Attempts) != 2 {
+		t.Fatalf("详情应有 2 条尝试，实际 %d", len(detail.Attempts))
+	}
+	if detail.Attempts[0].ChannelID != "bad" || detail.Attempts[1].ChannelID != "good" {
+		t.Fatalf("详情顺序应按发生顺序（bad 先、good 后），实际 %s -> %s",
+			detail.Attempts[0].ChannelID, detail.Attempts[1].ChannelID)
+	}
+
+	// 关键回归：重试成功后，最终那条成功日志不能残留前一次失败的错误
+	if page.Items[0].Error != "" {
+		t.Fatalf("成功日志不应带 error 字段，实际=%q", page.Items[0].Error)
+	}
+	if page.Items[1].ResponseSnippet != "" {
+		t.Fatalf("失败日志不应把错误写进 response_snippet，实际=%q", page.Items[1].ResponseSnippet)
+	}
 	if !strings.Contains(page.Items[0].Endpoint, "/v1/chat/completions") {
 		t.Fatalf("应记录上游端点: %+v", page.Items[0])
 	}

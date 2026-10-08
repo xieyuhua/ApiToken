@@ -107,6 +107,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if uerr == nil {
 			h.store.RecordChannelAttempt(cand.ID, true, latency, res.Usage.Prompt, res.Usage.Completion, "")
 			h.store.RecordRequest(modelName, true, time.Since(start), res.Usage.Prompt, res.Usage.Completion)
+			entry.Error = ""
 			entry.Status = http.StatusOK
 			entry.ChannelID = cand.ID
 			entry.ChannelName = cand.Name
@@ -132,7 +133,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		attemptEntry.Time = time.Now()
 		attemptEntry.Status = statusOf(uerr)
 		attemptEntry.LatencyMS = latency.Milliseconds()
-		attemptEntry.ResponseSnippet = res.Snippet
+		attemptEntry.ResponseSnippet = "" // 失败原因只放在 Error 字段
 		h.finish(attemptEntry)
 
 		if !uerr.retryable(h.cfg.RT().RetryStatus) {

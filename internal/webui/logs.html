@@ -193,6 +193,23 @@ function renderCards(s, page) {
   ].map(([l, v, sub]) => '<div class="card"><div class="label">' + l + '</div><div class="value">' + v + '</div><div class="sub">' + sub + '</div></div>').join('');
 }
 
+/** 说明列：按结果语义给出可判断的一句话
+ *  失败 → 错误摘要；成功但发生切换 → 提示切换；成功 → 回复内容摘要 */
+function resultNote(e) {
+  if (e.error) {
+    return '<span class="err" title="' + esc(e.error) + '">' + esc(e.error.slice(0, 72)) + (e.error.length > 72 ? '…' : '') + '</span>';
+  }
+  const ok = e.status >= 200 && e.status < 400;
+  if (ok && e.attempts > 1) {
+    return '<span class="pill warn">已切换 ' + (e.attempts - 1) + ' 次</span>' +
+      (e.response_snippet ? ' <span class="muted" title="' + esc(e.response_snippet) + '">' + esc(e.response_snippet.slice(0, 40)) + '…</span>' : '');
+  }
+  if (ok && e.response_snippet) {
+    return '<span class="muted" title="' + esc(e.response_snippet) + '">' + esc(e.response_snippet.slice(0, 56)) + (e.response_snippet.length > 56 ? '…' : '') + '</span>';
+  }
+  return '<span class="muted">正常返回</span>';
+}
+
 function renderTable(items) {
   if (!items || !items.length) {
     $('logBody').innerHTML = '<tr><td colspan="10" class="empty">没有匹配的调用记录</td></tr>';
@@ -200,9 +217,7 @@ function renderTable(items) {
   }
   $('logBody').innerHTML = items.map(e => {
     const chLabel = e.channel_id ? esc(e.channel_id) + (e.channel_name ? ' <span class="muted">' + esc(e.channel_name) + '</span>' : '') : '<span class="muted">-</span>';
-    const note = e.error
-      ? '<span class="err" title="' + esc(e.error) + '">' + esc(e.error.slice(0, 70)) + (e.error.length > 70 ? '…' : '') + '</span>'
-      : (e.response_snippet ? '<span class="muted" title="' + esc(e.response_snippet) + '">' + esc(e.response_snippet.slice(0, 60)) + '…</span>' : '<span class="muted">-</span>');
+    const note = resultNote(e);
     const retry = e.attempts > 1 ? '<span class="pill warn">第' + e.attempts + '次</span>' : '';
     return '<tr>' +
       '<td class="mono nowrap" title="' + esc(fmtTime(e.time)) + '">' + fmtTimeShort(e.time) + '</td>' +
@@ -249,33 +264,48 @@ async function showDetail(requestId) {
     $('d_id').textContent = requestId;
     const s = d.summary || {};
     const attempts = (d.attempts || []).map((a, i) => {
-      const step = d.attempts.length > 1 ? '第 ' + (i + 1) + ' 次尝试 · ' : '';
-      return '<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">' +
-        '<div class="row" style="justify-content:space-between">' +
-        '<b>' + step + esc(a.channel_id || '未匹配渠道') + (a.channel_name ? ' <span class="muted">' + esc(a.channel_name) + '</span>' : '') + '</b>' +
-        '<span>' + statusPill(a.status) + ' <span class="mono muted">' + fmtLatency(a.latency_ms) + '</span></span>' +
+      const ok = a.status >= 200 && a.status < 400;
+      const stepHead = d.attempts.length > 1
+        ? '<div class="log-step' + (ok ? ' ok' : ' bad') + '">' + (i + 1) + '</div>'
+        : '';
+      return '<div class="log-block' + (ok ? '' : ' bad') + '">' +
+        '<div class="log-block-head">' + stepHead +
+          '<b>' + esc(a.channel_name || a.channel_id || '未匹配渠道') + '</b>' +
+          '<span class="muted mono">' + esc(a.channel_id || '') + '</span>' +
+          '<span class="sp" style="flex:1"></span>' +
+          '<span class="mono muted">' + fmtLatency(a.latency_ms) + '</span>' +
+          statusPill(a.status) +
         '</div>' +
+        (a.error ? '<div class="log-err">' + esc(a.error) + '</div>' : '') +
         '<div class="kv" style="margin-top:8px">' +
-        '<span class="k">时间</span><span class="mono">' + fmtTime(a.time) + '</span>' +
-        '<span class="k">客户端</span><span class="mono">' + esc(a.client_ip || '-') + '</span>' +
-        '<span class="k">模型</span><span class="mono">' + esc(a.model || '-') + (a.upstream_model ? ' → ' + esc(a.upstream_model) : '') + '</span>' +
-        '<span class="k">上游</span><span class="mono" style="word-break:break-all">' + esc(a.endpoint || '-') + '</span>' +
-        '<span class="k">类型</span><span>' + (a.stream ? '流式 SSE' : '非流式') + ' · 尝试 ' + a.attempts + ' 次</span>' +
-        '<span class="k">Token</span><span class="mono">入 ' + fmt(a.prompt_tokens) + ' / 出 ' + fmt(a.completion_tokens) + '</span>' +
-        (a.error ? '<span class="k">错误</span><span class="err mono" style="word-break:break-all">' + esc(a.error) + '</span>' : '') +
+        '<span class="k">模型</span><span class="mono">' + esc(a.model || '-') +
+          (a.upstream_model && a.upstream_model !== a.model ? ' <span class="muted">→</span> ' + esc(a.upstream_model) : '') + '</span>' +
+        '<span class="k">上游端点</span><span class="mono" style="word-break:break-all">' + esc(a.endpoint || '-') + '</span>' +
+        '<span class="k">Token</span><span class="mono">' +
+          (a.prompt_tokens || a.completion_tokens ? '入 ' + fmt(a.prompt_tokens) + ' / 出 ' + fmt(a.completion_tokens) : '<span class="muted">无</span>') + '</span>' +
         '</div>' +
-        (a.request_snippet ? '<label style="margin-top:8px">请求摘要</label><pre class="log">' + esc(a.request_snippet) + '</pre>' : '') +
-        (a.response_snippet ? '<label style="margin-top:8px">响应/错误摘要</label><pre class="log">' + esc(a.response_snippet) + '</pre>' : '') +
+        (a.request_snippet ? '<div class="log-sub">请求内容</div><pre class="log">' + esc(a.request_snippet) + '</pre>' : '') +
+        (a.response_snippet ? '<div class="log-sub">回复内容</div><pre class="log">' + esc(a.response_snippet) + '</pre>' : '') +
+        '<div class="log-foot">' + fmtTime(a.time) + ' · ' + (a.stream ? '流式 SSE' : '非流式') + '</div>' +
         '</div>';
     }).join('');
+    const rows = d.attempts || [];
+    const last = rows[rows.length - 1] || {}; // 数组已按发生顺序，最后一条即最终结果
+    const finalOk = last.status >= 200 && last.status < 400;
+    const sum = [
+      ['结果', finalOk ? '成功' : '失败'],
+      ['总耗时', fmtLatency(s.avg_latency_ms)],
+      ['尝试', rows.length + ' 次' + (rows.length > 1 ? '（故障转移）' : '')],
+      ['Token', (last.prompt_tokens || last.completion_tokens) ? fmt(last.prompt_tokens) + ' 入 / ' + fmt(last.completion_tokens) + ' 出' : '无'],
+      ['客户端', d.client_ip || '-'],
+      ['Request ID', requestId]
+    ];
     $('d_body').innerHTML =
-      '<div class="tagline" style="margin-bottom:12px">' +
-      '<span>模型 <b>' + esc(d.model || '-') + '</b></span>' +
-      '<span>客户端 <b>' + esc(d.client_ip || '-') + '</b></span>' +
-      '<span>尝试 <b>' + ((d.attempts || []).length) + '</b> 次</span>' +
-      '<span>成功 <b>' + fmt(s.success || 0) + '</b> / 失败 <b>' + fmt(s.failed || 0) + '</b></span>' +
-      '<span>总延迟 <b>' + fmtLatency(s.avg_latency_ms) + '</b></span>' +
-      '</div>' + (attempts || '<div class="muted">无记录</div>');
+      '<div class="log-sum">' + sum.map(function (x) {
+        return '<div class="log-sum-item"><div class="k">' + x[0] + '</div><div class="v">' + esc(x[1]) + '</div></div>';
+      }).join('') + '</div>' +
+      '<div class="log-sub">调用链路（按发生顺序）</div>' +
+      (attempts || '<div class="muted">无记录</div>');
     $('detailDlg').showModal();
   } catch (e) { toast(e.message, true); }
 }

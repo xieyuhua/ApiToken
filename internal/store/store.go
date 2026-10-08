@@ -691,14 +691,18 @@ func (s *Store) QueryLogs(q model.LogQuery) model.LogPage {
 	}
 }
 
-// RequestLogs 返回同一 request_id 的全部日志（故障转移会产生多条）。
+// RequestLogs 返回同一 request_id 的全部日志，按发生顺序（最早 -> 最新）。
 func (s *Store) RequestLogs(requestID string) []model.LogEntry {
-	all := s.logs.Snapshot()
+	all := s.logs.Snapshot() // 内部为倒序（最新在前）
 	out := make([]model.LogEntry, 0, 2)
 	for _, e := range all {
 		if e.RequestID == requestID {
 			out = append(out, e)
 		}
+	}
+	// 反转成时间正序：最早 -> 最新，最后一条即最终结果
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
 	}
 	return out
 }
