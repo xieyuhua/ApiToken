@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>对话测试 · apitoken</title>
 <link rel="stylesheet" href="/static/style.css" />
+<script>(function(){try{var t=localStorage.getItem('apitoken_theme')||'auto';if(t==='auto'){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';}document.documentElement.dataset.theme=t;}catch(e){}})();</script>
 <style>
   .wrap{display:grid;grid-template-columns:270px 1fr;gap:16px;align-items:start}
   .side{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px}
@@ -42,6 +43,8 @@
     <a href="/settings">设置</a>
   </nav>
   <span class="sp"></span>
+<button class="ghost theme-btn" id="themeBtn" onclick="toggleTheme()" title="切换主题">🌗</button>
+
   <span class="tag" id="status"><span class="dot off"></span>未连接</span>
 </header>
 

@@ -1,5 +1,5 @@
 server:
-  addr: :18101
+  addr: :18104
   request_timeout: 5m0s
   stream_timeout: 15m0s
   read_timeout: 1m0s
@@ -8,13 +8,14 @@ server:
   data_dir: ./data
 security:
   client_keys:
-    - sk-gateway-0001
-  admin_token: adm-0001
+    - xieyuhua
+  admin_token: xieyuhua
 routing:
   strategy: priority_round_robin
   max_attempts: 2
-  force_stream_usage: false
+  force_stream_usage: true
   retry_status:
+    - 400
     - 408
     - 409
     - 425
@@ -89,3 +90,5 @@ channels:
     priority: 40
     enabled: false
     note: "Coding Plan 订阅用 https://api.stepfun.com/step_plan/v1"
+ui:
+  theme: auto

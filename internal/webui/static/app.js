@@ -1,6 +1,48 @@
 /* apitoken 管理端公共脚本 */
 const $ = id => document.getElementById(id);
 
+/* ---------------- 主题 ---------------- */
+const THEMES = ['auto', 'dark', 'light'];
+const THEME_ICON = {auto: '🌗', dark: '🌙', light: '☀️'};
+const THEME_CN = {auto: '跟随系统', dark: '深色', light: '浅色'};
+
+function systemTheme() {
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+}
+
+function resolveTheme(t) {
+  return t === 'auto' ? systemTheme() : t;
+}
+
+function currentTheme() {
+  return localStorage.getItem('apitoken_theme') || 'auto';
+}
+
+function applyTheme(t) {
+  document.documentElement.dataset.theme = resolveTheme(t || currentTheme());
+  const btn = $('themeBtn');
+  if (btn) {
+    btn.textContent = THEME_ICON[t || currentTheme()] || '🌗';
+    btn.title = '主题：' + (THEME_CN[t || currentTheme()] || '跟随系统') + '（点击切换）';
+  }
+}
+
+function toggleTheme() {
+  const cur = currentTheme();
+  const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
+  localStorage.setItem('apitoken_theme', next);
+  applyTheme(next);
+  toast('主题已切换为：' + (THEME_CN[next] || next));
+}
+
+/** 保存服务端下发的默认主题（仅当本机没有手动选择时生效） */
+function applyServerTheme(t) {
+  if (!t || THEMES.indexOf(t) < 0) return;
+  if (localStorage.getItem('apitoken_theme')) return;
+  applyTheme(t);
+}
+
+/* ---------------- 鉴权与请求 ---------------- */
 function adminToken() { return localStorage.getItem('apitoken_admin') || ''; }
 function saveToken() {
   localStorage.setItem('apitoken_admin', $('token').value.trim());
@@ -57,6 +99,11 @@ function statusPill(code) {
   return `<span class="pill ${cls}">${code || '-'}</span>`;
 }
 
+function copyText(text) {
+  if (!text) return toast('没有可复制的内容', true);
+  navigator.clipboard?.writeText(text).then(() => toast('已复制'), () => toast('复制失败', true));
+}
+
 /* 通用横向条形图 */
 function renderBars(elId, items, opts = {}) {
   const el = $(elId);
@@ -72,3 +119,5 @@ function renderBars(elId, items, opts = {}) {
       <span class="track"><span class="fill ${bad ? 'bad' : ''}" style="width:${pct}%"></span></span>${right}</div>`;
   }).join('');
 }
+
+applyTheme();

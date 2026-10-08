@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>调用日志 · apitoken</title>
 <link rel="stylesheet" href="/static/style.css" />
+<script>(function(){try{var t=localStorage.getItem('apitoken_theme')||'auto';if(t==='auto'){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';}document.documentElement.dataset.theme=t;}catch(e){}})();</script>
 </head>
 <body>
 <header>
@@ -18,6 +19,7 @@
   </nav>
   <span class="tag" id="meta">-</span>
   <span class="sp"></span>
+<button class="ghost theme-btn" id="themeBtn" onclick="toggleTheme()" title="切换主题">🌗</button>
   <input id="token" placeholder="管理令牌 adm-xxx" style="width:190px" />
   <button class="ghost" onclick="saveToken()">保存</button>
   <button class="ghost" onclick="load()">刷新</button>

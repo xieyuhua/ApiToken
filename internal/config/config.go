@@ -72,6 +72,9 @@ type Runtime struct {
 
 	// 出网
 	ProxyURL string
+
+	// 界面
+	Theme string // auto | dark | light
 }
 
 // Clone 深拷贝运行时配置。
@@ -85,8 +88,14 @@ func (r *Runtime) Clone() *Runtime {
 	return &cp
 }
 
+// UIConfig 界面外观配置。
+type UIConfig struct {
+	Theme string `yaml:"theme"`
+}
+
 // Config 网关总配置。
 type Config struct {
+	UI       UIConfig        `yaml:"ui"`
 	Server   ServerConfig    `yaml:"server"`
 	Security SecurityConfig  `yaml:"security"`
 	Routing  RoutingConfig   `yaml:"routing"`
@@ -209,6 +218,7 @@ func (c *Config) runtimeFromFields() *Runtime {
 		ConnectTimeout:   c.Upstream.ConnectTimeout.D(),
 		DefaultTimeout:   c.Upstream.DefaultTimeout.D(),
 		ProxyURL:         c.Upstream.ProxyURL,
+		Theme:            c.UI.Theme,
 	}
 	if rt.MaxAttempts <= 0 {
 		rt.MaxAttempts = 3
@@ -294,6 +304,11 @@ func (c *Config) applyDefaults() {
 	if c.Upstream.MaxIdleConns <= 0 {
 		c.Upstream.MaxIdleConns = 200
 	}
+	switch c.UI.Theme {
+	case "dark", "light", "auto":
+	default:
+		c.UI.Theme = "auto"
+	}
 	for i := range c.Channels {
 		if c.Channels[i].Weight <= 0 {
 			c.Channels[i].Weight = 1
@@ -329,6 +344,7 @@ func (c *Config) validate() error {
 // saveView 持久化到 config.yaml 的部分（渠道与路由由 data/gateway.json 管理，不在此覆盖）。
 type saveView struct {
 	Server   ServerConfig   `yaml:"server"`
+	UI       UIConfig       `yaml:"ui"`
 	Security SecurityConfig `yaml:"security"`
 	Routing  RoutingConfig  `yaml:"routing"`
 	Logging  LoggingConfig  `yaml:"logging"`
@@ -344,6 +360,7 @@ func Save(c *Config) error {
 	rt := c.RT()
 	view := saveView{
 		Server:   c.Server,
+		UI:       UIConfig{Theme: rt.Theme},
 		Security: SecurityConfig{ClientKeys: append([]string(nil), rt.ClientKeys...), AdminToken: rt.AdminToken},
 		Routing: RoutingConfig{
 			Strategy: rt.Strategy, MaxAttempts: rt.MaxAttempts,

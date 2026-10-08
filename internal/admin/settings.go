@@ -34,6 +34,9 @@ type SettingsView struct {
 
 	// 出网
 	ProxyURL string `json:"proxy_url"`
+
+	// 界面主题：auto | dark | light
+	Theme string `json:"theme"`
 }
 
 // SettingsMeta 展示用的只读信息与提示。
@@ -63,13 +66,14 @@ func viewFromRuntime(rt *config.Runtime, level string) SettingsView {
 		RequestTimeout:   int(rt.RequestTimeout / time.Second),
 		StreamTimeout:    int(rt.StreamTimeout / time.Second),
 		ProxyURL:         rt.ProxyURL,
+		Theme:            rt.Theme,
 	}
 }
 
 func boolPtr(b bool) *bool { return &b }
 
-// getSettings GET /admin/settings
-func (h *Handler) getSettings(w http.ResponseWriter, _ *http.Request) {
+// getSettings GET /admin/settings（?reveal=1 返回密钥明文）
+func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 	rt := h.cfg.RT()
 	v := viewFromRuntime(rt, h.cfg.Logging.Level)
 	masked := v
@@ -78,6 +82,12 @@ func (h *Handler) getSettings(w http.ResponseWriter, _ *http.Request) {
 		masked.ClientKeys = append(masked.ClientKeys, model.MaskSecret(k))
 	}
 	masked.AdminToken = model.MaskSecret(v.AdminToken)
+	revealed := r.URL.Query().Get("reveal") == "1"
+	if revealed {
+		// 已通过管理令牌鉴权，允许查看明文（前端需二次确认）
+		masked.ClientKeys = v.ClientKeys
+		masked.AdminToken = v.AdminToken
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"settings": masked,
@@ -88,6 +98,7 @@ func (h *Handler) getSettings(w http.ResponseWriter, _ *http.Request) {
 			HotFields:     []string{"网关密钥 / 管理令牌", "路由策略与重试", "日志设置", "请求超时", "出网代理"},
 		},
 		"admin_token_set": rt.AdminToken != "",
+		"revealed":        revealed,
 	})
 }
 
@@ -177,6 +188,16 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		next.StreamTimeout = time.Duration(in.StreamTimeout) * time.Second
 	}
 	next.ProxyURL = strings.TrimSpace(in.ProxyURL)
+
+	// 界面主题
+	switch in.Theme {
+	case "":
+	case "auto", "dark", "light":
+		next.Theme = in.Theme
+	default:
+		writeErr(w, http.StatusBadRequest, "主题仅支持 auto / dark / light")
+		return
+	}
 
 	// 应用：内存立即生效 + 落盘
 	h.cfg.ApplyRuntime(next)

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>网关自检 · apitoken</title>
 <link rel="stylesheet" href="/static/style.css" />
+<script>(function(){try{var t=localStorage.getItem('apitoken_theme')||'auto';if(t==='auto'){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';}document.documentElement.dataset.theme=t;}catch(e){}})();</script>
 <style>
   .group-title{font-size:12px;color:var(--muted);margin:14px 0 6px;letter-spacing:.5px}
   .check{display:grid;grid-template-columns:22px 190px 1fr;gap:10px;align-items:start;padding:8px 4px;border-bottom:1px solid var(--border);font-size:13px}
@@ -37,6 +38,7 @@
   </nav>
   <span class="tag" id="meta">-</span>
   <span class="sp"></span>
+<button class="ghost theme-btn" id="themeBtn" onclick="toggleTheme()" title="切换主题">🌗</button>
   <input id="token" placeholder="管理令牌 adm-xxx" style="width:190px" />
   <button class="ghost" onclick="saveToken()">保存</button>
   <button class="ghost" onclick="loadOverview()">刷新</button>
