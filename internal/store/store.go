@@ -602,10 +602,7 @@ func (s *Store) Snapshot() model.Snapshot {
 			snap.EnabledChannels++
 		}
 		h := s.health[id]
-		status := h.Status
-		if status == "" {
-			status = "unknown"
-		}
+		status := h.Status // 空表示尚未做过连通性测试
 		snap.Channels = append(snap.Channels, model.ChannelStat{
 			ID: ch.ID, Name: ch.Name, BaseURL: ch.BaseURL,
 			Enabled: ch.Enabled, Weight: ch.Weight, Priority: ch.Priority, Models: ch.Models,

@@ -200,19 +200,22 @@ function renderCards(s) {
 function renderChannels(list) {
   $('chBody').innerHTML = list.map(c => {
     const st = c.stats || {};
-    const health = c.health || 'unknown';
+    const health = c.health || '';
+    const healthPill = health === 'healthy' ? '<span class="pill healthy" title="最近一次连通性测试通过">连通正常</span>'
+      : health === 'unhealthy' ? '<span class="pill unhealthy" title="最近一次连通性测试失败">连通异常</span>'
+      : '';
     const auth = (c.auth_style || 'bearer') === 'bearer' ? '' :
       `<span class="pill" title="鉴权方式">${esc(c.auth_style)}${c.auth_header ? ':' + esc(c.auth_header) : ''}</span>`;
     return `<tr>
-      <td><b>${esc(c.name)}</b><div class="muted mono">${esc(c.id)}</div></td>
+      <td><b>${esc(c.name)}</b> ' + healthPill + '<div class="muted mono">${esc(c.id)}</div></td>
       <td class="mono"><div>${esc(host(c.base_url))}</div><div class="muted">${esc(c.base_url)}</div>${auth}</td>
       <td class="mono muted">${esc(c.api_key)}</td>
       <td class="mono">${(c.models && c.models.length) ? c.models.map(esc).join('<br>') : '<span class="muted">全部模型</span>'}</td>
       <td class="mono nowrap">P${c.priority} / W${c.weight}</td>
       <td class="nowrap">
         <span class="pill ${c.enabled ? 'on' : 'off'}">${c.enabled ? '启用' : '停用'}</span>
-        <span class="pill ${health}">${health}</span>
-        ${c.last_error ? `<div class="mono err" style="max-width:220px;overflow:hidden;text-overflow:ellipsis" title="${esc(c.last_error)}">${esc(c.last_error)}</div>` : ''}
+
+        ${health === 'unhealthy' && c.last_error ? `<div class="mono err" style="max-width:200px;overflow:hidden;text-overflow:ellipsis" title="最近错误：${esc(c.last_error)}">${esc(c.last_error)}</div>` : ''}
       </td>
       <td class="mono nowrap">${fmt(st.requests)}/${fmt(st.success)}/${fmt(st.failed)}<div class="muted">${fmt(st.prompt_tokens + st.completion_tokens)} tok</div></td>
       <td class="nowrap">
