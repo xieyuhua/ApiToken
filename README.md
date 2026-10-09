@@ -218,6 +218,9 @@ routes:
 - `extra_headers`：附加请求头（如腾讯云企业 ID 头）
 - `timeout_sec`：单独的超时时间
 
+> **User-Agent 透传**：客户端的 `User-Agent` 会原样转发给上游，不会被改写成 `Go-http-client/1.1`
+> （部分上游按 UA 做来源识别与风控）。要用渠道自定义 UA 覆盖它，见 10.3。
+
 ---
 
 ## 6. 管理 API
@@ -500,6 +503,36 @@ Makefile               # build / run / test / test-web / vet / fmt / clean
   只有**零命中**时，关闭列表才会把输入文本采纳为自定义值 —— 这样「搜索半截词」不会被误当成改名
 - 重复挂载同一输入框会自动卸载旧实例（`Combo.detach`），不会堆积事件监听器
 
+### 10.3 上游请求头处理（User-Agent 透传）
+
+`proxy.BuildRequestOpts` 按固定顺序写请求头，**后写的覆盖先写的**，所以顺序即优先级：
+
+| 顺序 | 请求头 | 来源 |
+| --- | --- | --- |
+| 1 | `Content-Type`、`Accept` | 网关按是否流式固定设置 |
+| 2 | `User-Agent` | **客户端透传**（`BuildOpts.UserAgent`） |
+| 3 | `Authorization` 等鉴权头 | 渠道 `api_key` + `auth_style` / `auth_header` / `auth_prefix` |
+| 4 | 渠道 `extra_headers` 的全部头 | 渠道配置，**优先级最高**，可覆盖上面三项 |
+
+细节：
+
+- 客户端没带 `User-Agent` 时不写这个头，保持 Go 客户端的默认值 `Go-http-client/1.1`；
+- 透传前经 `sanitizeUA` 剔除 CR/LF 与控制字符，避免非法头值让整个请求失败；
+- 故障转移的每次尝试复用同一个客户端 UA；
+- 网关自己发起的请求（连通性测试 `Probe`、拉取模型 `FetchModels`）走 `BuildRequest`，
+  不带任何客户端 UA。
+
+要把某个渠道的 UA 固定成自己的标识（例如中转要求带渠道名），在该渠道配 `extra_headers`：
+
+```yaml
+channels:
+  - id: relay-1
+    extra_headers:
+      User-Agent: my-gateway/1.0
+```
+
+> `extra_headers` 也会覆盖 `Authorization`，配置时留意键名不要写错。
+
 ---
 
 ## 11. 开发与测试
@@ -589,7 +622,7 @@ flowchart TD
     K --> L["serve 故障转移循环<br/>次数 = min MaxAttempts, 候选数 proxy/chat.go:139"]
     L --> M["attempt: timeoutFor 定超时"]
     M --> N["BuildRequestOpts: 覆盖 model、注入 extra_params、<br/>流式追加 stream_options.include_usage"]
-    N --> O["applyAuth: bearer / header / query，再叠加 extra_headers"]
+    N --> O["applyAuth: bearer / header / query，再叠加 extra_headers<br/>（已透传客户端 User-Agent）"]
     O --> P["client.Do"]
     P --> Q{"结果"}
     Q -->|"2xx"| R{"是否流式"}
@@ -611,7 +644,8 @@ flowchart TD
 - **协议差异全部收敛到 `responder` 接口**（`proxy/relay.go:18`）：入站是 `openAIResponder` 或
   `anthropicResponder`，Anthropic 侧额外强制 `ForceUsage:true`，出站流式由 `Begin/Line/End` 重放事件序列；
 - **每次上游尝试单独落一条日志**（同 `request_id`），因此 `/logs` 能还原完整故障转移链，最后一条即最终结果；
-- token 用量只做**累加统计**（兼容 OpenAI 与 Anthropic 字段名），无额度扣减、无 Key 签发。
+- token 用量只做**累加统计**（兼容 OpenAI 与 Anthropic 字段名），无额度扣减、无 Key 签发；
+- **请求头**：`User-Agent` 由客户端透传（不写头时沿用 Go 默认值），渠道 `extra_headers` 可覆盖，详见 10.3。
 
 ### 12.3 管理面链路
 
