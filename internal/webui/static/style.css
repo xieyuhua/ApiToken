@@ -4,7 +4,7 @@
   --input-bg:#0d1117; --hover:#1b2029; --code-bg:#0b0f14; --code-fg:#7ee787;
   --ok-bg:#0f2b17; --ok-bd:#1d4429; --warn-bg:#2b2413; --warn-bd:#5c4a22;
   --err-bg:#2b1113; --err-bd:#5c2222; --user-bg:#16324f; --user-bd:#1f4b78;
-  --shadow:0 8px 24px rgba(0,0,0,.35);
+  --shadow:0 8px 24px rgba(0,0,0,.35); --bot-bg:#0f141b; --err-fg:#ffb3ae; --on-primary:#ffffff;
 }
 /* 亮色主题 */
 html[data-theme="light"]{
@@ -13,7 +13,7 @@ html[data-theme="light"]{
   --input-bg:#ffffff; --hover:#f2f5fa; --code-bg:#f2f5fa; --code-fg:#0a6b2e;
   --ok-bg:#e8f6ec; --ok-bd:#a8ddb9; --warn-bg:#fdf5e2; --warn-bd:#e8cf94;
   --err-bg:#fdecea; --err-bd:#f2b8b3; --user-bg:#e3effd; --user-bd:#b7d3f7;
-  --shadow:0 8px 24px rgba(20,35,60,.10);
+  --shadow:0 8px 24px rgba(20,35,60,.10); --bot-bg:#f7f9fc; --err-fg:#a4262c; --on-primary:#ffffff;
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:14px/1.6 -apple-system,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif;transition:background .2s,color .2s}
@@ -27,7 +27,7 @@ header .sp{flex:1}
 nav{display:flex;gap:6px;flex-wrap:wrap}
 nav a{padding:5px 12px;border-radius:6px;color:var(--muted);font-size:13px}
 nav a:hover{background:var(--panel2);text-decoration:none;color:var(--text)}
-nav a.active{background:var(--primary);color:#fff}
+nav a.active{background:var(--primary);color:var(--on-primary)}
 
 main{padding:20px 24px 60px;max-width:1500px;margin:0 auto}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px}
@@ -53,7 +53,7 @@ input,select,textarea{background:var(--input-bg);border:1px solid var(--border);
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary)}
 label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
 
-button{background:var(--primary);color:#fff;border:0;border-radius:6px;padding:7px 14px;font-size:13px;cursor:pointer;font-family:inherit}
+button{background:var(--primary);color:var(--on-primary);border:0;border-radius:6px;padding:7px 14px;font-size:13px;cursor:pointer;font-family:inherit}
 button:hover{filter:brightness(1.1)}
 button:disabled{opacity:.5;cursor:not-allowed;filter:none}
 button.ghost{background:transparent;border:1px solid var(--border);color:var(--text)}
@@ -114,3 +114,26 @@ pre.log{font-family:ui-monospace,Consolas,monospace;font-size:12px;background:va
 .log-step.bad{background:var(--err-bg);color:var(--err);border-color:var(--err-bd)}
 .log-err{margin-top:8px;padding:8px 10px;border-radius:6px;background:var(--err-bg);border:1px solid var(--err-bd);color:var(--err);font-family:ui-monospace,Consolas,monospace;font-size:11.5px;word-break:break-all;white-space:pre-wrap}
 .log-foot{margin-top:8px;font-size:11px;color:var(--muted)}
+/* 渠道列表：模型列折叠展示 */
+.mdl-td{width:26%;min-width:220px}
+.mdl-cell{display:flex;flex-direction:column;gap:3px;align-items:flex-start}
+.mdl-cell .mdl-chip{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:1px 6px;font-size:11.5px;line-height:17px}
+.mdl-clamp{display:flex;flex-wrap:wrap;gap:3px;max-height:58px;overflow:hidden}
+.mdl-cell.open .mdl-clamp{max-height:none}
+.mdl-rest{display:flex;flex-wrap:wrap;gap:3px;max-height:none;overflow:visible}
+.mdl-foot{display:flex;gap:8px;align-items:center}
+.linkbtn{background:none;border:0;padding:0;cursor:pointer;color:var(--primary);font-size:11.5px;font-family:inherit}
+.linkbtn:hover{text-decoration:underline}
+/* 渠道列表：密钥列固定宽度，长密钥不再撑宽表格 */
+.key-td{width:130px;max-width:130px}
+.key-cell{display:block;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:11.5px;line-height:1.5;padding:1px 4px;border:1px solid var(--border);border-radius:5px;background:var(--panel2)}
+.key-td .linkbtn{margin-top:2px}
+td.url-td{max-width:210px}
+td.url-td .u-full{display:block;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 渠道名称列：名称 + 连通状态标签 + 渠道 ID */
+.ch-name{min-width:150px}
+.ch-name b{font-size:13.5px}
+.ch-name .pill{margin-left:6px;vertical-align:1px}
+.ch-name .muted{margin-top:2px;font-size:11.5px}

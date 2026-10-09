@@ -18,9 +18,9 @@
   .msg .who{font-size:11px;color:var(--muted);margin-bottom:4px}
   .bubble{padding:10px 13px;border-radius:10px;white-space:pre-wrap;word-break:break-word;font-size:13.5px;line-height:1.7}
   .msg.user{margin-left:auto}
-  .msg.user .bubble{background:#16324f;border:1px solid #1f4b78}
-  .msg.bot .bubble{background:#0f141b;border:1px solid var(--border)}
-  .msg.err .bubble{background:#2b1113;border:1px solid #5c2222;color:#ffb3ae}
+  .msg.user .bubble{background:var(--user-bg);border:1px solid var(--user-bd)}
+  .msg.bot .bubble{background:var(--bot-bg);border:1px solid var(--border)}
+  .msg.err .bubble{background:var(--err-bg);border:1px solid var(--err-bd);color:var(--err-fg)}
   .msg .meta{font-size:11px;color:var(--muted);margin-top:5px;display:flex;gap:10px;flex-wrap:wrap}
   .chat-foot{border-top:1px solid var(--border);padding:10px 12px}
   .chat-foot textarea{resize:vertical;min-height:64px}
@@ -43,7 +43,6 @@
     <a href="/settings">设置</a>
   </nav>
   <span class="sp"></span>
-<button class="ghost theme-btn" id="themeBtn" onclick="toggleTheme()" title="切换主题">🌗</button>
 
   <span class="tag" id="status"><span class="dot off"></span>未连接</span>
 </header>

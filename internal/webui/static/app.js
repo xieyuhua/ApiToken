@@ -19,20 +19,47 @@ function currentTheme() {
 }
 
 function applyTheme(t) {
-  document.documentElement.dataset.theme = resolveTheme(t || currentTheme());
-  const btn = $('themeBtn');
+  const theme = t || currentTheme();
+  document.documentElement.dataset.theme = resolveTheme(theme);
+  const btn = $('themeBtn') || document.querySelector('#themeBtn');
   if (btn) {
-    btn.textContent = THEME_ICON[t || currentTheme()] || '🌗';
-    btn.title = '主题：' + (THEME_CN[t || currentTheme()] || '跟随系统') + '（点击切换）';
+    btn.textContent = THEME_ICON[theme] || '🌗';
+    btn.title = '主题：' + (THEME_CN[theme] || '跟随系统') + '（点击切换）';
   }
 }
 
-function toggleTheme() {
+function setTheme(t) {
+  localStorage.setItem('apitoken_theme', t);
+  applyTheme(t);
+}
+
+/** 主题按钮：顶栏一个按钮，点击即在 跟随系统 / 深色 / 浅色 之间切换 */
+function mountThemePicker() {
+  if ($('themeBtn')) return;
+  const header = document.querySelector('header');
+  if (!header) return;
+
+  const btn = document.createElement('button');
+  btn.id = 'themeBtn';
+  btn.className = 'ghost theme-btn';
+  btn.title = '切换主题';
+  btn.addEventListener('click', toggleTheme);
+
+  const anchor = header.querySelector('input#token') || header.querySelector('.sp');
+  if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(btn, anchor);
+  else header.appendChild(btn);
+
+  // 按钮晚于首次 applyTheme 创建，这里直接给出初始图标与提示
   const cur = currentTheme();
-  const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
-  localStorage.setItem('apitoken_theme', next);
-  applyTheme(next);
-  toast('主题已切换为：' + (THEME_CN[next] || next));
+  btn.textContent = THEME_ICON[cur] || '🌗';
+  btn.title = '主题：' + (THEME_CN[cur] || '跟随系统') + '（点击切换）';
+  applyTheme(cur);
+}
+/** 点击按钮：跟随系统 -> 深色 -> 浅色 -> 跟随系统（无弹窗，按钮图标即状态） */
+
+function toggleTheme() {
+  const next = THEMES[(THEMES.indexOf(currentTheme()) + 1) % THEMES.length];
+  setTheme(next);
 }
 
 /** 保存服务端下发的默认主题（仅当本机没有手动选择时生效） */
@@ -120,4 +147,12 @@ function renderBars(elId, items, opts = {}) {
   }).join('');
 }
 
+// 跟随系统时，系统主题变化实时生效
+if (window.matchMedia) {
+  const mq = window.matchMedia('(prefers-color-scheme: light)');
+  const onChange = () => { if (currentTheme() === 'auto') applyTheme('auto'); };
+  if (mq.addEventListener) mq.addEventListener('change', onChange);
+  else if (mq.addListener) mq.addListener(onChange);
+}
 applyTheme();
+mountThemePicker();

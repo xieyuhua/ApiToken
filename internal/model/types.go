@@ -68,7 +68,8 @@ func (c Channel) Masked() Channel {
 	return c
 }
 
-// MaskSecret 脱敏展示密钥。
+// MaskSecret 脱敏展示密钥：固定输出宽度（前 4 + 4 星号 + 后 4）。
+// 不按原长度补星号，避免长密钥脱敏后依然撑宽管理页表格，同时也隐蔽了密钥长度。
 func MaskSecret(s string) string {
 	if s == "" {
 		return ""
@@ -76,7 +77,7 @@ func MaskSecret(s string) string {
 	if len(s) <= 8 {
 		return strings.Repeat("*", len(s))
 	}
-	return s[:4] + strings.Repeat("*", len(s)-8) + s[len(s)-4:]
+	return s[:4] + "****" + s[len(s)-4:]
 }
 
 // Route 显式路由：一个对外模型名 -> 有序渠道列表（顺序即故障转移顺序）。

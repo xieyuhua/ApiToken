@@ -11,7 +11,7 @@
   .keys textarea{min-height:96px;font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
   .saved{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;opacity:0;transition:opacity .4s}
   .saved.on{opacity:1}
-  .warnbox{border:1px solid #5c4a22;background:#2b2413;border-radius:8px;padding:10px 12px;font-size:12.5px;color:#e3c27a}
+  .warnbox{border:1px solid var(--warn-bd);background:var(--warn-bg);border-radius:8px;padding:10px 12px;font-size:12.5px;color:var(--warn)}
   .ro{color:var(--muted);font-size:12px}
 </style>
 </head>
@@ -27,7 +27,6 @@
   </nav>
   <span class="tag" id="ver">-</span>
   <span class="sp"></span>
-<button class="ghost theme-btn" id="themeBtn" onclick="toggleTheme()" title="切换主题">🌗</button>
   <input id="token" placeholder="管理令牌 adm-xxx" style="width:190px" />
   <button class="ghost" onclick="saveToken()">保存</button>
   <button class="ghost" onclick="load()">重新载入</button>
@@ -261,8 +260,7 @@ function maskSecrets() {
 }
 
 function previewTheme(t) {
-  localStorage.setItem('apitoken_theme', t);
-  applyTheme(t);
+  setTheme(t); // 本机立即预览并同步顶栏选择器
   $('themeNow').textContent = '本机当前：' + (THEME_CN[currentTheme()] || currentTheme());
   toast('预览：' + (THEME_CN[t] || t) + '（点「保存并生效」写入配置）');
 }

@@ -19,7 +19,6 @@
   </nav>
   <span class="tag" id="ver">-</span>
   <span class="sp"></span>
-<button class="ghost theme-btn" id="themeBtn" onclick="toggleTheme()" title="切换主题">🌗</button>
   <input id="token" placeholder="管理令牌 adm-xxx" style="width:190px" />
   <button class="ghost" onclick="saveToken()">保存</button>
   <button class="ghost" onclick="refresh()">刷新</button>
@@ -30,6 +29,8 @@
 
   <section>
     <h2>渠道（上游平台账号）<span class="sp"></span>
+      <input id="chFilter" class="mini" style="width:200px" placeholder="筛选：名称 / ID / 模型名" oninput="renderChannels()" />
+      <span class="muted mono" id="chCount"></span>
       <button onclick="openDlg()">+ 添加渠道</button>
     </h2>
     <table>
@@ -39,6 +40,7 @@
       </tr></thead>
       <tbody id="chBody"></tbody>
     </table>
+    <p class="hint">模型只展示前几个，点「+N 个」展开；筛选框可按模型名反查渠道（例如输入 kimi 找出支持该模型的全部渠道）。</p>
   </section>
 
   <section>
@@ -197,8 +199,77 @@ function renderCards(s) {
   ].map(([l, v, sub]) => `<div class="card"><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${sub}</div></div>`).join('');
 }
 
+/** 模型列：只显示前 MODEL_PREVIEW 个，其余折叠为「+N 个」，点开可展开全部 */
+/** 密钥列：固定宽度显示（不因长密钥撑宽表格），悬停看掩码，可一键复制明文 */
+function keyCell(c) {
+  const k = c.api_key || '';
+  if (!k) return '<span class="muted">未设置</span>';
+  return `<span class="key-cell" title="${esc(k)}">${esc(k)}</span>` +
+    `<button class="linkbtn" onclick="copyKey('${esc(c.id)}')" title="复制完整密钥到剪贴板">复制</button>`;
+}
+
+async function copyKey(id) {
+  try {
+    const list = await api('/admin/channels?reveal=1');
+    const c = (list || []).find(x => x.id === id);
+    if (!c || !c.api_key) return toast('未找到该渠道的密钥', true);
+    copyText(c.api_key);
+  } catch (e) { toast(e.message, true); }
+}
+const MODEL_PREVIEW = 6;
+function modelCell(c) {
+  const ms = c.models || [];
+  if (!ms.length) return '<span class="muted">全部模型（放通）</span>';
+  const chip = m => `<span class="mdl-chip" title="${esc(m)}">${esc(m)}</span>`;
+  const head = ms.slice(0, MODEL_PREVIEW).map(chip).join('');
+  if (ms.length <= MODEL_PREVIEW) return `<div class="mdl-cell"><div class="mdl-clamp">${head}</div></div>`;
+  // 折叠状态下只渲染前 MODEL_PREVIEW 个，其余等展开时再插入 DOM
+  return `<div class="mdl-cell" id="mdl-${esc(c.id)}">
+    <div class="mdl-clamp">${head}</div>
+    <div class="mdl-foot">
+      <button class="linkbtn" data-n="${ms.length}" onclick="toggleModels('${esc(c.id)}')">共 ${ms.length} 个 · 展开 ▾</button>
+      <button class="linkbtn" onclick="copyModels('${esc(c.id)}')">复制</button>
+    </div>
+  </div>`;
+}
+
+/** 展开 / 收起某个渠道的模型列表（展开时才把剩余模型插入 DOM） */
+function toggleModels(id) {
+  const box = $('mdl-' + id);
+  if (!box) return;
+  const btn = box.querySelector('.linkbtn');
+  const rest = box.querySelector('.mdl-rest');
+  if (rest) {                                   // 已展开 -> 收起并移除多余节点
+    rest.remove();
+    box.classList.remove('open');
+    if (btn) btn.textContent = '共 ' + btn.dataset.n + ' 个 · 展开 ▾';
+    return;
+  }
+  const c = (window.__channels || []).find(x => x.id === id);
+  const ms = (c && c.models) || [];
+  if (ms.length <= MODEL_PREVIEW) return;
+  const div = document.createElement('div');
+  div.className = 'mdl-rest';
+  div.innerHTML = ms.slice(MODEL_PREVIEW)
+    .map(m => `<span class="mdl-chip" title="${esc(m)}">${esc(m)}</span>`).join('');
+  box.insertBefore(div, box.querySelector('.mdl-foot'));
+  box.classList.add('open');
+  if (btn) btn.textContent = '收起 ▴';
+}
+
+/** 复制该渠道全部模型名（每行一个） */
+function copyModels(id) {
+  const c = (window.__channels || []).find(x => x.id === id);
+  if (!c || !(c.models || []).length) return toast('该渠道未单独声明模型', true);
+  copyText((c.models || []).join('\n'));
+}
 function renderChannels(list) {
-  $('chBody').innerHTML = list.map(c => {
+  const all = list || window.__channels || [];
+  const kw = ($('chFilter') ? $('chFilter').value : '').trim().toLowerCase();
+  const rows = kw ? all.filter(c =>
+    [c.name, c.id, c.base_url].concat(c.models || []).join(' ').toLowerCase().includes(kw)) : all;
+  if ($('chCount')) $('chCount').textContent = kw ? rows.length + ' / ' + all.length : '';
+  $('chBody').innerHTML = rows.map(c => {
     const st = c.stats || {};
     const health = c.health || '';
     const healthPill = health === 'healthy' ? '<span class="pill healthy" title="最近一次连通性测试通过">连通正常</span>'
@@ -207,10 +278,10 @@ function renderChannels(list) {
     const auth = (c.auth_style || 'bearer') === 'bearer' ? '' :
       `<span class="pill" title="鉴权方式">${esc(c.auth_style)}${c.auth_header ? ':' + esc(c.auth_header) : ''}</span>`;
     return `<tr>
-      <td><b>${esc(c.name)}</b> ' + healthPill + '<div class="muted mono">${esc(c.id)}</div></td>
-      <td class="mono"><div>${esc(host(c.base_url))}</div><div class="muted">${esc(c.base_url)}</div>${auth}</td>
-      <td class="mono muted">${esc(c.api_key)}</td>
-      <td class="mono">${(c.models && c.models.length) ? c.models.map(esc).join('<br>') : '<span class="muted">全部模型</span>'}</td>
+      <td class="ch-name"><b>${esc(c.name)}</b>${healthPill}<div class="muted mono">${esc(c.id)}</div></td>
+      <td class="mono url-td"><div>${esc(host(c.base_url))}</div><div class="muted u-full" title="${esc(c.base_url)}">${esc(c.base_url)}</div>${auth}</td>
+      <td class="mono muted key-td">${keyCell(c)}</td>
+      <td class="mono mdl-td">${modelCell(c)}</td>
       <td class="mono nowrap">P${c.priority} / W${c.weight}</td>
       <td class="nowrap">
         <span class="pill ${c.enabled ? 'on' : 'off'}">${c.enabled ? '启用' : '停用'}</span>
@@ -226,7 +297,7 @@ function renderChannels(list) {
         <button class="mini danger" onclick="delChannel('${c.id}')">删除</button>
       </td>
     </tr>`;
-  }).join('') || `<tr><td colspan="8" class="empty">还没有渠道，点击右上角添加</td></tr>`;
+  }).join('') || `<tr><td colspan="8" class="empty">${kw ? '没有匹配的渠道，换个关键词试试' : '还没有渠道，点击右上角添加'}</td></tr>`;
 }
 
 function renderRoutes(list) {
@@ -345,13 +416,13 @@ async function probeChannel() {
   try {
     const r = await api('/admin/channels/test', {method: 'POST', body: JSON.stringify(draft)});
     if (r.ok) {
-      showProbe('<div style="border:1px solid #1d4429;background:#0f2b17;border-radius:8px;padding:10px 12px;margin-top:10px">' +
+      showProbe('<div class="probe-box ok">' +
         '<b class="ok">连通正常</b> <span class="muted">' + fmtLatency(r.latency_ms) + ' · 模型 ' + esc(r.model) +
         ' · token ' + fmt(r.usage.prompt_tokens) + '/' + fmt(r.usage.completion_tokens) + '</span>' +
         (r.reply ? '<pre class="log" style="margin-top:8px">' + esc(r.reply) + '</pre>' : '') + '</div>');
       if (!$('f_models').value && draft.models.length) $('f_models').value = draft.models.join(', ');
     } else {
-      showProbe('<div style="border:1px solid #5c2222;background:#2b1113;border-radius:8px;padding:10px 12px;margin-top:10px">' +
+      showProbe('<div class="probe-box bad">' +
         '<b class="err">测试失败</b> <span class="muted">HTTP ' + (r.status || '-') + ' · ' + fmtLatency(r.latency_ms) + '</span>' +
         '<pre class="log" style="margin-top:8px">' + esc(r.error || '未知错误') + '</pre></div>');
     }
