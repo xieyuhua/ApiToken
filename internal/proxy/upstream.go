@@ -152,6 +152,11 @@ type BuildOpts struct {
 	// Anthropic 端点依赖它：OpenAI 流式把用量放在最后一个数据块，
 	// 不开启则流式请求的 token 统计恒为 0。
 	ForceUsage bool
+	// UserAgent 透传客户端的 User-Agent（如 OpenAI SDK、Chatbox、Cline 的真实 UA）。
+	//
+	// 为空表示不设置，由 Go 客户端填默认的 Go-http-client/1.1；
+	// 网关自身发起的探测（Probe / FetchModels）走这条路径，不带客户端 UA。
+	UserAgent string
 }
 
 // BuildRequest 构造发往上游的请求（鉴权与路径均取自渠道配置）。
@@ -203,11 +208,30 @@ func (h *Handler) BuildRequestOpts(ctx context.Context, cand model.Candidate, pa
 	} else {
 		req.Header.Set("Accept", "application/json")
 	}
+	// 透传客户端 User-Agent：部分上游按 UA 做来源识别或风控，改成网关 UA 会触发额外校验。
+	// 放在 extra_headers 之前，渠道仍可用 extra_headers 覆盖成固定 UA。
+	if ua := sanitizeUA(opts.UserAgent); ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
 	applyAuth(req, ch)
 	for k, v := range ch.ExtraHeaders {
 		req.Header.Set(k, v)
 	}
 	return req, nil
+}
+
+// sanitizeUA 剔除 UA 中的 CR/LF 与控制字符，避免非法头值让整个请求失败。
+func sanitizeUA(ua string) string {
+	ua = strings.TrimSpace(ua)
+	if ua == "" {
+		return ""
+	}
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, ua)
 }
 
 // DefaultChatPath 默认的 OpenAI 兼容对话路径。

@@ -532,3 +532,147 @@ node tools/webui_test.js     # 可选，需要 Node
 
 Go 测试里还有一批对页面/脚本内容的**字符串断言**（例如「chat.js 不得再自带一份下拉实现」），
 用来防止结构被改回原样；交互行为请以 `tools/webui_test.js` 为准。
+
+---
+
+## 12. 流程图
+
+本节用 Mermaid 描述四条主链路：**启动**、**数据面**（对外推理请求）、**管理面**（`/admin/*`），
+以及后台任务与隐式状态。图中的 `文件:行号` 是阅读代码时的跳转锚点。
+
+### 12.1 启动流程
+
+`main()` 里没有 DI 框架，全部手工按序装配：
+
+```mermaid
+flowchart TD
+    A["main() · cmd/gateway/main.go:21"] --> B["解析参数 -config / -addr / -version"]
+    B --> C["config.Load: yaml 解析 → applyDefaults → validate → ApplyRuntime<br/>config/config.go:185"]
+    C --> D["store.New: 读 data/gateway.json<br/>空则用 config 播种并落盘 store/store.go:58"]
+    D --> E["构造 http.Server: 读头 15s / 空闲 120s"]
+    E --> F["gateway.New → proxy.Handler + admin.New + webui<br/>注册全部路由 gateway/gateway.go:44"]
+    F --> G["中间件链: recover → requestID → securityHeaders → CORS → mux"]
+    G --> H["go ListenAndServe，打印版本/地址/UI/API/渠道数"]
+    H --> I["监听 SIGINT / SIGTERM → Shutdown 10s"]
+
+    C -.->|"yaml.Node 增量合并，保留注释"| C1["config.Save config/config.go:363"]
+    D -.->|"tmp 文件 + os.Rename 原子写 0600"| D1["data/gateway.json"]
+```
+
+关键点：
+- `validate()` 会校验渠道 id 唯一、`base_url` 非空，并 `MkdirAll(data_dir)`（`config/config.go:326`）；
+- `store.load()` 若发现配置里新增了渠道，只补进内存，**不覆盖**已在 `gateway.json` 里的改动；
+- 全局唯一的后台协程就是 `main.go:61` 的 `ListenAndServe`。
+
+### 12.2 数据面主链路
+
+对应 `POST /v1/chat/completions` 与 `POST /v1/messages`：
+
+```mermaid
+flowchart TD
+    A["客户端请求"] --> B{"clientAuth: Bearer 或 X-Api-Key<br/>常量时间比较 gateway/gateway.go:104"}
+    B -->|"不匹配"| B1["401"]
+    B -->|"通过（client_keys 为空则放行）"| C{"入站协议"}
+    C -->|OpenAI| D["解析 JSON，取 model / stream<br/>proxy/chat.go:81"]
+    C -->|Anthropic| E["translate.RequestToOpenAI 严格校验<br/>proxy/messages.go:40"]
+    E -->|"不支持的字段直接 400"| E1["400"]
+    E --> D
+
+    D --> F["store.Candidates(model) store/store.go:292"]
+    F --> G{"路由策略"}
+    G -->|"优先级 1 显式 route 命中"| H["严格按声明顺序返回"]
+    G -->|"优先级 2 自动路由"| I["Channel.Supports 过滤<br/>models / alias / 空 = 放通全部"]
+    I --> J["orderCandidates: failover / priority_round_robin /<br/>round_robin / random，权重展开上限 20 + rotate"]
+    H --> K["候选渠道列表"]
+    J --> K
+
+    K --> L["serve 故障转移循环<br/>次数 = min MaxAttempts, 候选数 proxy/chat.go:139"]
+    L --> M["attempt: timeoutFor 定超时"]
+    M --> N["BuildRequestOpts: 覆盖 model、注入 extra_params、<br/>流式追加 stream_options.include_usage"]
+    N --> O["applyAuth: bearer / header / query，再叠加 extra_headers"]
+    O --> P["client.Do"]
+    P --> Q{"结果"}
+    Q -->|"2xx"| R{"是否流式"}
+    R -->|"流式"| S["Peek 首字节探测（此时尚未下发响应头，仍可换渠道）<br/>Begin → 逐行 Line + Flush → End"]
+    R -->|"非流式"| T["ParseUsage → snippet → JSON<br/>OpenAI 原样透传 / Anthropic 转 translate.ResponseToAnthropic"]
+    S --> U["成功收尾"]
+    T --> U
+    U --> U1["RecordChannelAttempt + RecordRequest<br/>AddLog → LogBuffer 环形缓冲 proxy/chat.go:146"]
+
+    Q -->|"429 / 5xx / 超时，且命中 RetryStatus"| V{"还有候选？"}
+    V -->|"是"| L
+    V -->|"否"| W["最终错误回包<br/>带 X-Request-Id / X-Gateway-Channel / X-Gateway-Upstream-Model"]
+    Q -->|"不可重试，或 ctx 取消 / 超时"| W
+```
+
+关键点：
+- **超时优先级**：`channel.timeout_sec` → `stream_timeout` → `request_timeout` → `default_timeout` → 120s
+  （`proxy/upstream.go:257`）；
+- **协议差异全部收敛到 `responder` 接口**（`proxy/relay.go:18`）：入站是 `openAIResponder` 或
+  `anthropicResponder`，Anthropic 侧额外强制 `ForceUsage:true`，出站流式由 `Begin/Line/End` 重放事件序列；
+- **每次上游尝试单独落一条日志**（同 `request_id`），因此 `/logs` 能还原完整故障转移链，最后一条即最终结果；
+- token 用量只做**累加统计**（兼容 OpenAI 与 Anthropic 字段名），无额度扣减、无 Key 签发。
+
+### 12.3 管理面链路
+
+`/admin/*` 全部经 `AdminAuth`（`X-Admin-Token` 或 Bearer，为空则放行），入口在 `admin/handler.go:32`：
+
+```mermaid
+flowchart TD
+    A["/admin/* 请求"] --> B{"AdminAuth gateway/gateway.go:126"}
+    B -->|"不匹配"| B1["403"]
+    B --> C{"操作分类"}
+
+    C -->|渠道 CRUD| D["store.Upsert / SetEnabled / DeleteChannel"]
+    D --> D1["删除时顺带清理 route 引用"]
+    D1 --> D2["save 原子落盘 data/gateway.json"]
+
+    C -->|连通性测试| E["proxy.Probe 发一条 max_tokens=16 的 ping"]
+    E --> E1["store.SetHealth: healthy / unhealthy + 延迟"]
+
+    C -->|拉取模型| F["proxy.FetchModels: GET base_url/models"]
+    F --> F1["apply=true 时写回渠道模型列表"]
+
+    C -->|路由 upsert / delete| G["按对外模型名 upsert：同名 = 更新，改名 = 新增"]
+
+    C -->|设置热更新| H["updateSettings 校验 admin/settings.go:106"]
+    H --> H1["cfg.ApplyRuntime 原子替换，保存即生效"]
+    H1 --> H2["store.OnRuntimeChanged 调整日志容量"]
+    H2 --> H3["config.Save 写回 config.yaml"]
+
+    C -->|自检诊断| I["buildChecks 静态 6 组<br/>config / channel / route / storage / logging / network"]
+    I --> J["并发探测: 渠道信号量 5（最多 20 个）<br/>DNS / TCP / TLS 信号量 6"]
+    J --> J1["结论 pass / warn / fail / skip"]
+```
+
+关键点：
+- 渠道与路由的改动**只落 `data/gateway.json`**，配置文件的 `channels` / `routes` 只在首次播种时作为初始值；
+- 设置项热更新走 `atomic.Pointer`（`config/config.go:170`），内存态立即生效，同时回写 YAML；
+- 诊断的并发探测是**请求内**的，用信号量限流，不是后台定时任务。
+
+### 12.4 后台任务与隐式状态
+
+| 项 | 结论 |
+| --- | --- |
+| 定时任务 | **无**（全仓库没有 ticker / cron / 定时循环） |
+| 常驻协程 | 仅 `cmd/gateway/main.go:61` 的 `ListenAndServe` |
+| 请求内并发 | 仅诊断的 `probeChannels`（sem=5）与 `probeNetwork`（sem=6）两处 |
+| 队列 / 显式状态机 | 无 |
+
+三处可视为「隐式状态」的地方，画状态图时可参考：
+
+- **渠道健康状态**：`healthy` / `unhealthy` / 未测（空）。写入点只有 `admin/handler.go:319`
+  的连通性测试与 `admin/diagnostics.go:339` 的渠道体检；
+- **诊断结论等级**：`pass` / `warn` / `fail` / `skip`，汇总于 `admin/diagnostics.go:448`；
+- **故障转移链**：一次请求产生 N 条同 `request_id` 的日志，`store.RequestLogs` 反转成时间正序，
+  最后一条为最终结果。
+
+### 12.5 一图总览
+
+```
+main.go 启动链 ──► 全局中间件 ──┬─► 数据面 /v1/*  ──► serve 故障转移循环 ──► 上游 LLM
+                               │        （鉴权 → 协议归一化 → 候选排序 → 转发 → 统计日志）
+                               └─► 管理面 /admin/* ──► 内存态 ──► data/gateway.json
+                                        │                └──► config.yaml（设置回写）
+                                        └──► 诊断并发探测（渠道 ping / DNS / TCP / TLS）
+```

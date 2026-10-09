@@ -30,6 +30,7 @@ type mockUpstream struct {
 	lastAuth  atomic.Value // Authorization 头
 	lastAPI   atomic.Value // X-API-Key 之类自定义头
 	lastQuery atomic.Value // ?key=
+	lastUA    atomic.Value // User-Agent 头
 }
 
 func newMock(fail bool) *mockUpstream {
@@ -40,6 +41,7 @@ func newMock(fail bool) *mockUpstream {
 		m.lastAuth.Store(r.Header.Get("Authorization"))
 		m.lastAPI.Store(r.Header.Get("X-API-Key"))
 		m.lastQuery.Store(r.URL.Query().Get("key"))
+		m.lastUA.Store(r.Header.Get("User-Agent"))
 		body, _ := io.ReadAll(r.Body)
 		var payload map[string]any
 		_ = json.Unmarshal(body, &payload)

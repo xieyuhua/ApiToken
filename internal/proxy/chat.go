@@ -247,6 +247,16 @@ func (h *Handler) logConvert(resp responder, modelName, channelID string) {
 	h.log.Info("protocol_convert", attrs...)
 }
 
+// withClientUA 把入站请求的 User-Agent 带上，其余选项原样保留。
+// 每次故障转移都复用同一个客户端 UA。
+func withClientUA(opts BuildOpts, r *http.Request) BuildOpts {
+	if r == nil {
+		return opts
+	}
+	opts.UserAgent = r.Header.Get("User-Agent")
+	return opts
+}
+
 // attempt 向单个渠道发起请求，成功时写出响应（返回用量与摘要信息）。
 func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, reqID string, cand model.Candidate,
 	payload map[string]any, stream bool, resp responder, opts BuildOpts) (res relayResult, uerr *upstreamError) {
@@ -255,7 +265,7 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, reqID string, 
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
-	req, err := h.BuildRequestOpts(ctx, cand, payload, stream, opts)
+	req, err := h.BuildRequestOpts(ctx, cand, payload, stream, withClientUA(opts, r))
 	if err != nil {
 		return res, &upstreamError{Transport: err, ChannelID: cand.ID}
 	}
