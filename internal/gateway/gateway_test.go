@@ -86,18 +86,35 @@ func newMock(fail bool) *mockUpstream {
 
 func newTestGateway(t *testing.T, channels []model.Channel) http.Handler {
 	t.Helper()
+	h, _ := newTestGatewayWithDir(t, channels)
+	return h
+}
+
+// newTestGatewayWithDir 额外返回数据目录，供需要校验持久化文件的用例使用。
+func newTestGatewayWithDir(t *testing.T, channels []model.Channel) (http.Handler, string) {
+	t.Helper()
+	return newTestGatewayWithLogging(t, channels, config.LoggingConfig{
+		Level: "error", KeepLogs: 100, RecordPayload: true, PayloadLimit: 2000,
+	})
+}
+
+// newTestGatewayWithLogging 允许自定义日志配置（如开启文件落盘）。
+func newTestGatewayWithLogging(t *testing.T, channels []model.Channel, logging config.LoggingConfig) (http.Handler, string) {
+	t.Helper()
+	dir := t.TempDir()
 	cfg := &config.Config{
-		Server:   config.ServerConfig{Addr: ":0", DataDir: t.TempDir(), MaxBodyMB: 8, RequestTimeout: config.Duration(20 * time.Second), StreamTimeout: config.Duration(30 * time.Second)},
+		Server:   config.ServerConfig{Addr: ":0", DataDir: dir, MaxBodyMB: 8, RequestTimeout: config.Duration(20 * time.Second), StreamTimeout: config.Duration(30 * time.Second)},
 		Security: config.SecurityConfig{ClientKeys: []string{"sk-test"}, AdminToken: "adm-test"},
 		Routing:  config.RoutingConfig{Strategy: "priority_round_robin", MaxAttempts: 3, RetryStatus: []int{429, 500, 502, 503}},
-		Logging:  config.LoggingConfig{Level: "error", KeepLogs: 100, RecordPayload: true, PayloadLimit: 2000},
+		Logging:  logging,
 		Channels: channels,
 	}
 	st, err := store.New(cfg, testLogger())
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
-	return gateway.New(cfg, st, testLogger()).Handler()
+	t.Cleanup(st.CloseLogs) // 落盘模式下有后台协程，测试结束必须关闭
+	return gateway.New(cfg, st, testLogger()).Handler(), dir
 }
 
 func post(t *testing.T, h http.Handler, path, body string) *httptest.ResponseRecorder {

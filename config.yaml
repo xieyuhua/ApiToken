@@ -28,9 +28,16 @@ routing:
 logging:
   level: info
   access_log: true
+  # 内存里保留的日志条数（控制台日志页只读这部分热数据）
   keep_logs: 800
   record_payload: true
   payload_limit: 8000
+  # 访问日志异步落盘为 JSONL 分段文件：由后台协程批量写，请求路径不受影响。
+  # 改动这几项需要重启生效（涉及文件句柄）。
+  file_enabled: true
+  # file_dir: ./data/logs      # 空 = <data_dir>/logs
+  file_max_mb: 64              # 单个分段文件大小上限，超过则滚动新文件
+  file_keep: 7                 # 保留的最近分段文件数
 upstream:
   default_timeout: 2m0s
   connect_timeout: 10s

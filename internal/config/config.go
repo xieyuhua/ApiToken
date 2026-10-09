@@ -141,6 +141,13 @@ type LoggingConfig struct {
 	KeepLogs      int    `yaml:"keep_logs"`
 	RecordPayload bool   `yaml:"record_payload"`
 	PayloadLimit  int    `yaml:"payload_limit"`
+
+	// 以下几项控制访问日志的异步落盘，改后需重启生效（涉及文件句柄）。
+	// 落盘由后台协程完成，请求路径只做一次非阻塞入队，不受磁盘速度影响。
+	FileEnabled bool   `yaml:"file_enabled"`
+	FileDir     string `yaml:"file_dir"`    // 空 = <data_dir>/logs
+	FileMaxMB   int    `yaml:"file_max_mb"` // 单个分段文件大小上限
+	FileKeep    int    `yaml:"file_keep"`   // 保留的最近分段文件数
 }
 
 // UpstreamConfig 上游 HTTP 客户端配置。
@@ -292,6 +299,12 @@ func (c *Config) applyDefaults() {
 	if c.Logging.PayloadLimit <= 0 {
 		c.Logging.PayloadLimit = DefaultPayloadLimit
 	}
+	if c.Logging.FileMaxMB <= 0 {
+		c.Logging.FileMaxMB = DefaultLogFileMaxMB
+	}
+	if c.Logging.FileKeep <= 0 {
+		c.Logging.FileKeep = DefaultLogFileKeep
+	}
 	if c.Upstream.DefaultTimeout == 0 {
 		c.Upstream.DefaultTimeout = Duration(120 * time.Second)
 	}
@@ -320,8 +333,16 @@ func (c *Config) applyDefaults() {
 // 2000 偏小（长回复常被腰斩），提高到 8000；仍可通过设置页热更新调整。
 const DefaultPayloadLimit = 8000
 
-// DefaultKeepLogs 内存中保留的访问日志条数（重启清空）。
+// DefaultKeepLogs 内存中保留的访问日志条数（页面查询只读这部分热数据）。
 const DefaultKeepLogs = 1000
+
+// 访问日志落盘默认值。
+const (
+	// DefaultLogFileMaxMB 单个日志分段文件的大小上限，超过则滚动到新文件。
+	DefaultLogFileMaxMB = 64
+	// DefaultLogFileKeep 保留的最近分段文件数，更早的自动删除。
+	DefaultLogFileKeep = 7
+)
 
 func (c *Config) validate() error {
 	ids := map[string]bool{}

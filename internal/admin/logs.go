@@ -79,14 +79,15 @@ func (h *Handler) clearLogs(w http.ResponseWriter, _ *http.Request) {
 func (h *Handler) logFacets(w http.ResponseWriter, _ *http.Request) {
 	models := map[string]bool{}
 	channels := map[string]string{}
-	for _, e := range h.store.Logs(0) {
+	// 用 ForEach 在缓冲内聚合，避免为拿几个名字拷贝整个日志缓冲
+	h.store.ForEachLog(func(e model.LogEntry) {
 		if e.Model != "" {
 			models[e.Model] = true
 		}
 		if e.ChannelID != "" {
 			channels[e.ChannelID] = e.ChannelName
 		}
-	}
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"models":   sortedKeys(models),
 		"channels": sortedPairs(channels),

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"sort"
@@ -33,10 +33,13 @@ type Store struct {
 	usage  map[string]*model.ModelUsage
 	totals model.ModelUsage
 
-	rrMu sync.Mutex
-	rr   map[string]*uint64
+	// saveMu 串行化数据文件落盘，避免并发写同一个 .tmp 文件
+	saveMu sync.Mutex
+
+	rr sync.Map // model 名 -> *uint64 轮询游标，读多写少，避免全局互斥
 
 	logs *LogBuffer
+	sink *LogSink // 异步落盘管道；为 nil 时日志只进内存
 
 	started time.Time
 }
@@ -63,10 +66,11 @@ func New(cfg *config.Config, log *slog.Logger) (*Store, error) {
 		channels: map[string]*model.Channel{},
 		health:   map[string]HealthInfo{},
 		usage:    map[string]*model.ModelUsage{},
-		rr:       map[string]*uint64{},
 		logs:     NewLogBuffer(cfg.RT().KeepLogs),
 		started:  time.Now(),
 	}
+	// 启动日志落盘管道；若配置为纯内存模式，此处返回 nil 并退化为直接入缓冲
+	s.sink = newLogSink(cfg, s.logs, log)
 	if err := s.load(); err != nil {
 		return nil, err
 	}
@@ -131,7 +135,14 @@ func (s *Store) load() error {
 	return nil
 }
 
+// save 把渠道与路由原子落盘。
+//
+// saveMu 串行化写盘：否则两个并发的管理请求会同时写同一个 .tmp 文件并各自 rename，
+// 产生交错内容（数据文件损坏）。管理写操作是低频的，串行化不影响吞吐。
 func (s *Store) save() error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+
 	p := persisted{Channels: s.ListChannels(), Routes: s.ListRoutes()}
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
@@ -290,6 +301,19 @@ func (s *Store) DeleteRoute(modelName string) error {
 
 // Candidates 计算某个对外模型名的候选渠道列表（已按策略排序）。
 func (s *Store) Candidates(name string) []model.Candidate {
+	list, fixed := s.candidateSnapshot(name)
+	if list == nil || fixed {
+		return list
+	}
+	// 排序、加权展开与轮询游标都放到锁外执行：它们只依赖已拷出的快照数据。
+	// 这些计算包含建 map、排序与按权重展开（最多 20 倍），放在读锁内会阻塞
+	// RecordRequest / RecordChannelAttempt 的统计写入，抬高整体并发延迟。
+	return s.orderCandidates(name, list)
+}
+
+// candidateSnapshot 在读锁内取出候选快照。
+// fixed 为 true 表示命中显式路由，list 已是最终顺序，不需要再排序。
+func (s *Store) candidateSnapshot(name string) (list []model.Candidate, fixed bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -316,12 +340,11 @@ func (s *Store) Candidates(name string) []model.Candidate {
 		}
 		if len(list) > 0 {
 			// 显式路由严格按用户声明的顺序执行故障转移（不再按 priority 重排）
-			return list
+			return list, true
 		}
 	}
 
-	// 2) 自动路由：按渠道 models / alias 匹配
-	var list []model.Candidate
+	// 2) 自动路由：按渠道 models / alias 匹配（仅过滤，排序交给调用方）
 	for _, cid := range s.order {
 		ch, ok := s.channels[cid]
 		if !ok {
@@ -335,10 +358,11 @@ func (s *Store) Candidates(name string) []model.Candidate {
 			Channel: *ch, ID: ch.ID, Name: ch.Name, UpstreamModel: up,
 		})
 	}
-	return s.orderCandidates(name, list)
+	return list, false
 }
 
-// orderCandidates 按配置策略排序候选（调用方需持读锁）。
+// orderCandidates 按配置策略排序候选。
+// 必须在锁外调用（内部会取轮询游标与随机源）。
 func (s *Store) orderCandidates(name string, list []model.Candidate) []model.Candidate {
 	strategy := s.cfg.RT().Strategy
 	if len(list) <= 1 || strategy == "failover" {
@@ -373,6 +397,7 @@ func (s *Store) rotate(name string, list []model.Candidate, strategy string) []m
 	if strategy == "random" {
 		out := make([]model.Candidate, len(list))
 		copy(out, list)
+		// rand/v2 的包级函数不加全局锁；math/rand 的 Shuffle 会串行化所有并发请求
 		rand.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
 		return out
 	}
@@ -413,14 +438,12 @@ func dedup(in []model.Candidate) []model.Candidate {
 }
 
 func (s *Store) nextRoundRobin(name string) uint64 {
-	s.rrMu.Lock()
-	defer s.rrMu.Unlock()
-	v, ok := s.rr[name]
+	v, ok := s.rr.Load(name)
 	if !ok {
-		v = new(uint64)
-		s.rr[name] = v
+		cur, _ := s.rr.LoadOrStore(name, new(uint64))
+		v = cur
 	}
-	return atomic.AddUint64(v, 1)
+	return atomic.AddUint64(v.(*uint64), 1)
 }
 
 // PublicModels 汇总对外可用的模型名。
@@ -640,11 +663,39 @@ func (s *Store) OnRuntimeChanged(rt *config.Runtime) {
 	s.logs.SetMax(rt.KeepLogs)
 }
 
-// AddLog 追加访问日志。
-func (s *Store) AddLog(e model.LogEntry) { s.logs.Add(e) }
+// AddLog 投递一条访问日志。
+//
+// 只做一次非阻塞 channel 发送：落盘与内存入缓冲都在后台协程里完成，
+// 因此这条路径不会把磁盘 IO 或缓冲锁带进请求处理。
+func (s *Store) AddLog(e model.LogEntry) {
+	if s.sink != nil {
+		s.sink.Enqueue(e)
+		return
+	}
+	s.logs.Add(e)
+}
 
-// Logs 读取最近 n 条访问日志。
+// CloseLogs 停止日志协程并 flush 残留日志（进程退出前调用）。
+func (s *Store) CloseLogs() {
+	if s.sink != nil {
+		s.sink.Close()
+	}
+}
+
+// LogStats 返回日志丢弃数与已落盘数。
+func (s *Store) LogStats() (dropped, written int64) {
+	if s.sink == nil {
+		return 0, 0
+	}
+	return s.sink.Stats()
+}
+
+// Logs 读取最近 n 条访问日志.
 func (s *Store) Logs(n int) []model.LogEntry { return s.logs.List(n) }
+
+// ForEachLog 在日志缓冲内遍历（最新在前），不产生切片分配。
+// 用于筛选项汇总这类只需汇总值的场景，避免整份拷贝。
+func (s *Store) ForEachLog(fn func(model.LogEntry)) { s.logs.ForEach(fn) }
 
 // QueryLogs 分页查询访问日志（含聚合统计）。
 func (s *Store) QueryLogs(q model.LogQuery) model.LogPage {
@@ -690,13 +741,9 @@ func (s *Store) QueryLogs(q model.LogQuery) model.LogPage {
 
 // RequestLogs 返回同一 request_id 的全部日志，按发生顺序（最早 -> 最新）。
 func (s *Store) RequestLogs(requestID string) []model.LogEntry {
-	all := s.logs.Snapshot() // 内部为倒序（最新在前）
-	out := make([]model.LogEntry, 0, 2)
-	for _, e := range all {
-		if e.RequestID == requestID {
-			out = append(out, e)
-		}
-	}
+	// 用 Find 而不是 Snapshot + 遍历：详情页只关心这一两条记录，
+	// 不该为此拷贝整个日志缓冲
+	out := s.logs.Find(func(e model.LogEntry) bool { return e.RequestID == requestID })
 	// 反转成时间正序：最早 -> 最新，最后一条即最终结果
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
@@ -705,14 +752,20 @@ func (s *Store) RequestLogs(requestID string) []model.LogEntry {
 }
 
 // ClearLogs 清空访问日志。
+// 只清内存视图，不动磁盘上的分段文件（那是历史归档，删了不可恢复）。
 func (s *Store) ClearLogs() int {
 	n := s.logs.Count()
+	if s.sink != nil {
+		// 丢弃队列里待处理的日志，否则它们会被后台协程写回，出现"清空后又冒出来"
+		s.sink.Purge()
+	}
 	s.logs.Clear()
 	return n
 }
 
 // Strategy 返回当前路由策略。
-func (s *Store) Strategy() string { return s.cfg.Routing.Strategy }
+// 走 RT() 而非直接读字段，否则设置热更新后这里仍返回旧值。
+func (s *Store) Strategy() string { return s.cfg.RT().Strategy }
 
 // Config 返回配置。
 func (s *Store) Config() *config.Config { return s.cfg }

@@ -84,6 +84,8 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Error("关闭超时", "err", err)
 	}
+	// HTTP 已停止接受请求，此时 flush 日志管道，避免丢掉最后一批访问日志
+	st.CloseLogs()
 	logger.Info("已退出")
 }
 

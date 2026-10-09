@@ -281,6 +281,10 @@ routes:
 | `logging.keep_logs` | `1000` | 内存保留的日志条数，重启清空（热更新，会顺带裁剪现有日志） |
 | `logging.record_payload` | — | 是否记录请求/响应摘要（可能含敏感内容）（热更新） |
 | `logging.payload_limit` | `8000` | 每侧摘要字符数上限，范围 100~200000（热更新） |
+| `logging.file_enabled` | `false` | 是否把访问日志异步落盘为 JSONL 分段文件（改后需重启，详见 10.4） |
+| `logging.file_dir` | `<data_dir>/logs` | 分段文件目录 |
+| `logging.file_max_mb` | `64` | 单个分段文件大小上限，超出滚动新文件 |
+| `logging.file_keep` | `7` | 保留的最近分段文件数，更早的自动删除 |
 | `upstream.default_timeout` | `120s` | 渠道未单独指定 `timeout_sec` 时的超时 |
 | `upstream.connect_timeout` | `10s` | 上游连接超时 |
 | `upstream.keep_alive` | `30s` | 上游连接池 keep-alive |
@@ -335,7 +339,9 @@ Key 无效或未生效。DeepSeek、商汤、腾讯 WorkBuddy 的 Key 各自独�
 - 聚合分析：按模型 / 渠道 / 状态码的次数与平均延迟、高频错误 Top 10
 - 导出与清空：`GET /admin/logs/export?format=csv|json`、`DELETE /admin/logs`
 
-日志默认存内存（条数由 `logging.keep_logs` 控制，默认 1000，重启清空）。需要记录请求/响应摘要时打开 `logging.record_payload`（可能含敏感内容，生产环境谨慎开启）。
+日志默认存内存（条数由 `logging.keep_logs` 控制，默认 1000）。需要记录请求/响应摘要时打开 `logging.record_payload`（可能含敏感内容，生产环境谨慎开启）。
+
+打开 `logging.file_enabled` 后，日志还会由后台协程**异步落盘**为 JSONL 分段文件（请求路径不做磁盘 IO，重启后自动恢复最近若干条到日志页）。机制、文件命名与清理策略见 10.4。
 
 摘要长度由 `logging.payload_limit` 控制（默认 **8000 字符**，按字符而非字节计，中文 1 字算 1 个字符；设置页可热更新，范围 100~200000）。超长内容会被截断，日志详情会明确标注「显示 X / 原始 Y 字」，流式回复则提示「仅记录前 N 字」——两者都是**存储上限**导致，并非页面展示不全。
 
@@ -533,6 +539,101 @@ channels:
 
 > `extra_headers` 也会覆盖 `Authorization`，配置时留意键名不要写错。
 
+### 10.4 访问日志的写入与查询
+
+日志最容易拖慢网关也最容易被误优化，这里说明现状与取舍。
+
+**写入：完全异步，请求路径不做 IO**
+
+```
+请求完成 → finish() → AddLog() → 非阻塞入队（channel，4096）→ 立即返回
+                                                 │
+                        后台单协程：攒批（256 条 / 200ms）→ 写内存热缓冲
+                                                          → 追加写 JSONL 分段文件
+```
+
+- 请求路径上只有**一次非阻塞 channel 发送**（纳秒级、无锁、无磁盘 IO），
+  因此磁盘慢、文件大、fsync 卡顿都影响不到转发；
+- 队列满时**丢弃并计数**而不是阻塞 —— 拿日志去反压网关是本末倒置；
+  丢弃数可通过 `/admin/api-info` 观测；
+- 落盘格式为 JSONL，一行一条 `LogEntry`，可直接 `grep` / `jq` 分析，
+  也便于外部日志系统采集；
+- 进程收到 `SIGINT`/`SIGTERM` 时先 `Shutdown` HTTP、再 flush 日志，避免丢最后一批。
+
+**落盘配置**（`logging` 段，改后需重启）
+
+| 配置项 | 默认 | 说明 |
+| --- | --- | --- |
+| `file_enabled` | `false` | 是否落盘；关闭时只保留内存日志 |
+| `file_dir` | `<data_dir>/logs` | 分段文件目录 |
+| `file_max_mb` | `64` | 单文件大小上限，超出滚动新文件 |
+| `file_keep` | `7` | 保留的最近文件数，更早的自动删除 |
+
+文件名形如 `access-20261009-153000.123-001.jsonl`，**时间戳后带毫秒与序号**：
+滚动常发生在同一毫秒内，只用秒级时间戳会让新段与旧段同名，
+配合 `O_APPEND` 等于写回旧文件、文件无限增长。序号定长补零，保证字典序即时间序。
+
+**查询：读内存热数据，不做全量拷贝**
+
+控制台只查内存里的最近 `keep_logs` 条（热数据），历史数据留在文件里：
+
+- 分页筛选：`QueryLogs` 过滤 + 聚合（成功率、p95、按模型/渠道/状态分组）；
+- 日志详情：按 `request_id` 取该次请求的完整尝试链路（故障转移会有多条）；
+- 筛选项：模型 / 渠道下拉；
+- 导出：CSV / JSON。
+
+> **重启后不丢日志视图**：启动时从最近的分段文件**尾部倒读** `keep_logs` 条回填内存
+> （`readLastLines` 分块读，不把大文件整个读进内存）。
+> 「清空日志」只清内存视图，不删磁盘文件 —— 已落盘的日志是历史归档。
+
+**为什么不引入数据库**
+
+日志是典型的只追加时序数据，查询模式固定（按时间倒序 + 少量维度筛选 + 聚合），
+SQLite/Postgres 在这里收益有限，代价却很实在：
+
+| 方案 | 代价 |
+| --- | --- |
+| `modernc.org/sqlite` | 纯 Go 但会让二进制增加数 MB；每条日志一次事务开销 |
+| `cgo` + `mattn/go-sqlite3` | 需要 C 编译器，破坏"单二进制、零依赖、跨平台免编译"的核心卖点 |
+| 外部 PG/MySQL | 要额外部署与运维，与"下载即用"冲突 |
+
+当前方案保持**零外部依赖、单二进制、免编译**，且请求路径的开销比"同步写 DB"低一到两个数量级。
+若后续确实需要跨进程查询或长期留存，把分段文件交给 Loki / ClickHouse / Vector 采集即可，
+JSONL 正是它们最省事的输入格式。
+
+### 10.5 并发与性能要点
+
+数据面是典型的「读多写少 + 高频写统计」场景，因此锁的粒度按这条路径设计：
+
+**锁的层级**（`internal/store`）
+
+| 锁 | 保护对象 | 特点 |
+| --- | --- | --- |
+| `Store.mu` | 渠道、路由、健康、统计 | 写锁只用于变更配置与累加统计；转发路径只持**读锁** |
+| `LogBuffer.mu` | 访问日志环形缓冲 | 写入 O(1)；`Find`/`ForEach` 在锁内遍历但不拷贝整份缓冲 |
+| `Store.saveMu` | 数据文件落盘 | 串行化 `tmp + rename`，避免并发写同一 `.tmp` 造成文件损坏 |
+| 轮询游标 `Store.rr` | 各模型的轮询下标 | `sync.Map` + 原子自增，读多写少，不再是全局互斥点 |
+
+**几个关键设计**
+
+- **统计写入不阻塞转发**：`RecordRequest` / `RecordChannelAttempt` 走写锁，而 `Candidates` 只在读锁内做「候选快照」（拷贝渠道），把排序、加权展开、轮询全放在**锁外**完成，避免转发路径的计算把统计写入堵住。
+- **访问日志写入完全异步**：请求路径只做一次非阻塞入队，落盘与内存写入都在后台协程（详见 10.4）。
+  缓冲本身是真环形缓冲，`Add` 只覆写最旧的一个槽位，复杂度 O(1)。改造前每写一条日志都要
+  `copy` 整个缓冲区（默认 `keep_logs: 1000`），单条日志约 280 字节，相当于每个请求额外搬移
+  约 280 KB。实测（同机 `-benchtime=2000x`）：
+
+  | 实现 | 每次 Add |
+  | --- | --- |
+  | 改造前（整段搬移） | ~4648 ns |
+  | 改造后（环形覆写） | ~136 ns |
+
+- **随机策略用 `math/rand/v2`**：包级函数不加全局锁，避免所有并发请求在随机源上排队。
+- **日志关键词搜索不拼串**：逐字段匹配，避免对每条日志 `strings.Join` + 两次 `ToLower` 造成的临时分配。
+
+> 注：本机 `go test -race` 在部分 Windows 环境不可用（tsan 运行时缺失）。因此并发正确性由
+> `internal/gateway/concurrency_test.go` 的「高并发 + 不变量断言」覆盖：并发请求的统计计数、
+> 日志条数必须与请求数严格一致，数据面与管理面混合并发不得死锁，并发写渠道后数据文件仍可解析。
+
 ---
 
 ## 11. 开发与测试
@@ -552,10 +653,13 @@ channels:
 
 ### 11.2 测试分层
 
-- **后端**：`internal/gateway` 下 10 个 `*_test.go`，覆盖非流式/流式转发、故障转移、鉴权、
+- **后端**：`internal/gateway` 下的 `*_test.go`，覆盖非流式/流式转发、故障转移、鉴权、
   渠道与路由 CRUD、日志分页与聚合、设置热更新、自检、Anthropic Messages 端点
   （协议转换、工具调用往返、思维链、流式事件序列、严格校验）；`internal/proxy/translate`
   有独立的协议转换单元测试。
+- **并发回归**：`internal/gateway/concurrency_test.go` 用高并发 + 不变量断言覆盖锁的正确性
+  （统计/日志计数与请求数一致、混合流量不死锁、并发写渠道后数据文件完好）；
+  `internal/store/logbuffer_test.go` 覆盖环形缓冲的顺序、覆写、动态扩容与并发读写。
 - **前端**：`tools/webui_test.js`，零依赖、Node 直接跑，内置极简 DOM stub，覆盖 Combo 组件
   （过滤/高亮/分组/键盘/卸载）与路由弹窗（编辑=更新、改名需确认、自由输入）：
 
@@ -630,7 +734,7 @@ flowchart TD
     R -->|"非流式"| T["ParseUsage → snippet → JSON<br/>OpenAI 原样透传 / Anthropic 转 translate.ResponseToAnthropic"]
     S --> U["成功收尾"]
     T --> U
-    U --> U1["RecordChannelAttempt + RecordRequest<br/>AddLog → LogBuffer 环形缓冲 proxy/chat.go:146"]
+    U --> U1["RecordChannelAttempt + RecordRequest<br/>AddLog → 非阻塞入队，后台批量写内存缓冲 + JSONL 文件"]
 
     Q -->|"429 / 5xx / 超时，且命中 RetryStatus"| V{"还有候选？"}
     V -->|"是"| L
@@ -645,7 +749,8 @@ flowchart TD
   `anthropicResponder`，Anthropic 侧额外强制 `ForceUsage:true`，出站流式由 `Begin/Line/End` 重放事件序列；
 - **每次上游尝试单独落一条日志**（同 `request_id`），因此 `/logs` 能还原完整故障转移链，最后一条即最终结果；
 - token 用量只做**累加统计**（兼容 OpenAI 与 Anthropic 字段名），无额度扣减、无 Key 签发；
-- **请求头**：`User-Agent` 由客户端透传（不写头时沿用 Go 默认值），渠道 `extra_headers` 可覆盖，详见 10.3。
+- **请求头**：`User-Agent` 由客户端透传（不写头时沿用 Go 默认值），渠道 `extra_headers` 可覆盖，详见 10.3；
+- **锁**：`store.Candidates` 只在读锁内做快照，排序与加权展开在锁外完成，不阻塞统计写入，详见 10.4。
 
 ### 12.3 管理面链路
 
@@ -689,9 +794,9 @@ flowchart TD
 | 项 | 结论 |
 | --- | --- |
 | 定时任务 | **无**（全仓库没有 ticker / cron / 定时循环） |
-| 常驻协程 | 仅 `cmd/gateway/main.go:61` 的 `ListenAndServe` |
+| 常驻协程 | 两个：`main.go` 的 `ListenAndServe`、日志管道的批量落盘协程（内部有 200ms flush ticker） |
 | 请求内并发 | 仅诊断的 `probeChannels`（sem=5）与 `probeNetwork`（sem=6）两处 |
-| 队列 / 显式状态机 | 无 |
+| 队列 / 显式状态机 | 日志管道是唯一的生产消费队列（容量 4096，满则丢弃并计数） |
 
 三处可视为「隐式状态」的地方，画状态图时可参考：
 
@@ -705,8 +810,10 @@ flowchart TD
 
 ```
 main.go 启动链 ──► 全局中间件 ──┬─► 数据面 /v1/*  ──► serve 故障转移循环 ──► 上游 LLM
-                               │        （鉴权 → 协议归一化 → 候选排序 → 转发 → 统计日志）
+                               │        （鉴权 → 协议归一化 → 候选排序 → 转发 → 统计 → 日志入队）
                                └─► 管理面 /admin/* ──► 内存态 ──► data/gateway.json
                                         │                └──► config.yaml（设置回写）
                                         └──► 诊断并发探测（渠道 ping / DNS / TCP / TLS）
+
+后台常驻：日志落盘协程（入队 → 攒批 → 内存热缓冲 + JSONL 分段文件 → 滚动清理）
 ```
