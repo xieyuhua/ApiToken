@@ -120,8 +120,8 @@
         <p class="hint">开启后调用日志会保存内容，可能含敏感信息</p>
       </div>
       <div>
-        <label>摘要最大字符数</label>
-        <input id="payloadLimit" type="number" min="100" step="100" />
+        <label title="每条日志保存的请求/回复摘要长度上限（按字符计，中文 1 字 = 1 个字符）。超出后日志详情会标注实际被截断。">摘要最大字符数</label>
+        <input id="payloadLimit" type="number" min="100" max="200000" step="100" />
       </div>
     </div>
   </section>

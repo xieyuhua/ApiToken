@@ -209,6 +209,36 @@ function resultNote(e) {
   return '<span class="muted">正常返回</span>';
 }
 
+/** 内容块：标题 + 截断提示 + 可滚动原文 + 展开/收起/复制
+ *  full > 0  -> 非流式：已知原始长度，能算被截掉多少
+ *  capped     -> 流式：达到采集上限，完整长度未知 */
+function contentBlock(title, text, full, capped) {
+  const shown = text.length;
+  let tip = '';
+  if (capped) {
+    tip = '<div class="log-tip" title="网关不缓存完整回复，日志只保留开头部分">' +
+      '回复较长，日志仅记录了前 ' + shown + ' 字（完整内容请在对应平台查看）</div>';
+  } else if (full && full > shown) {
+    tip = '<div class="log-tip" title="可在「设置 → 日志」中提高 payload_limit 后重试">' +
+      '已按 payload_limit 截断：显示 ' + shown + ' / 原始 ' + full + ' 字（少 ' + (full - shown) + '）</div>';
+  }
+  return '<div class="log-sub">' + esc(title) +
+      '<button class="linkbtn" onclick="toggleLogBox(this)">展开</button>' +
+      '<button class="linkbtn" onclick="copyText(' + JSON.stringify(text) + ')">复制</button>' +
+      (tip ? '<span class="log-tipflag">已截断</span>' : '') +
+    '</div>' +
+    '<pre class="log" data-collapsed="1">' + esc(text) + '</pre>' +
+    (tip ? '<div class="log-tipbox">' + tip + '</div>' : '');
+}
+
+/** 展开 / 收起内容块（默认限高 320px，可展开到全文） */
+function toggleLogBox(btn) {
+  const pre = btn.closest('.log-block').querySelector('pre.log');
+  if (!pre) return;
+  const collapsed = pre.getAttribute('data-collapsed') === '1';
+  pre.setAttribute('data-collapsed', collapsed ? '0' : '1');
+  btn.textContent = collapsed ? '收起' : '展开';
+}
 function renderTable(items) {
   if (!items || !items.length) {
     $('logBody').innerHTML = '<tr><td colspan="10" class="empty">没有匹配的调用记录</td></tr>';
@@ -283,8 +313,8 @@ async function showDetail(requestId) {
         '<span class="k">Token</span><span class="mono">' +
           (a.prompt_tokens || a.completion_tokens ? '入 ' + fmt(a.prompt_tokens) + ' / 出 ' + fmt(a.completion_tokens) : '<span class="muted">无</span>') + '</span>' +
         '</div>' +
-        (a.request_snippet ? '<div class="log-sub">请求内容</div><pre class="log">' + esc(a.request_snippet) + '</pre>' : '') +
-        (a.response_snippet ? '<div class="log-sub">回复内容</div><pre class="log">' + esc(a.response_snippet) + '</pre>' : '') +
+        (a.request_snippet ? contentBlock('请求内容', a.request_snippet, a.request_snippet_full) : '') +
+        (a.response_snippet ? contentBlock('回复内容', a.response_snippet, a.response_snippet_full, a.response_capped) : '') +
         '<div class="log-foot">' + fmtTime(a.time) + ' · ' + (a.stream ? '流式 SSE' : '非流式') + '</div>' +
         '</div>';
     }).join('');

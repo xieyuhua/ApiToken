@@ -177,6 +177,10 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "payload_limit 至少为 100")
 			return
 		}
+		if in.PayloadLimit > 200000 {
+			writeErr(w, http.StatusBadRequest, "payload_limit 最多为 200000（避免日志体积过大）")
+			return
+		}
 		next.PayloadLimit = in.PayloadLimit
 	}
 

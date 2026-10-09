@@ -227,7 +227,7 @@ func (c *Config) runtimeFromFields() *Runtime {
 		rt.KeepLogs = 1000
 	}
 	if rt.PayloadLimit <= 0 {
-		rt.PayloadLimit = 2000
+		rt.PayloadLimit = DefaultPayloadLimit
 	}
 	if rt.MaxBodyBytes <= 0 {
 		rt.MaxBodyBytes = 32 << 20
@@ -290,7 +290,7 @@ func (c *Config) applyDefaults() {
 		c.Logging.KeepLogs = 1000
 	}
 	if c.Logging.PayloadLimit <= 0 {
-		c.Logging.PayloadLimit = 2000
+		c.Logging.PayloadLimit = DefaultPayloadLimit
 	}
 	if c.Upstream.DefaultTimeout == 0 {
 		c.Upstream.DefaultTimeout = Duration(120 * time.Second)
@@ -315,6 +315,10 @@ func (c *Config) applyDefaults() {
 		}
 	}
 }
+
+// DefaultPayloadLimit 单条日志每侧保存的摘要字符数上限。
+// 2000 偏小（长回复常被腰斩），提高到 8000；仍可通过设置页热更新调整。
+const DefaultPayloadLimit = 8000
 
 func (c *Config) validate() error {
 	ids := map[string]bool{}

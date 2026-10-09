@@ -114,6 +114,8 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			entry.UpstreamModel = cand.UpstreamModel
 			entry.Endpoint = res.Endpoint
 			entry.ResponseSnippet = res.Snippet
+			entry.ResponseSnippetFull = res.SnippetFull
+			entry.ResponseCapped = res.SnippetCapped
 			entry.PromptTokens = res.Usage.Prompt
 			entry.CompletionTokens = res.Usage.Completion
 			entry.LatencyMS = time.Since(start).Milliseconds()
@@ -236,7 +238,7 @@ func (h *Handler) relayJSON(w http.ResponseWriter, resp *http.Response, reqID st
 		return res, &upstreamError{Transport: err}
 	}
 	res.Usage = ParseUsage(data)
-	res.Snippet = h.responseSnippet(data)
+	res.Snippet, res.SnippetFull = h.responseSnippet(data)
 	w.Header().Set("Content-Type", pickCT(resp.Header.Get("Content-Type")))
 	w.Header().Set("X-Request-Id", reqID)
 	w.Header().Set("X-Gateway-Channel", cand.ID)
@@ -279,8 +281,17 @@ func (h *Handler) relayStream(w http.ResponseWriter, resp *http.Response, cand m
 			if u := ParseUsageStream(line); u.Total() > 0 {
 				res.Usage = u
 			}
-			if collect && acc.Len() < limit {
-				acc.WriteString(streamDelta(line))
+			if collect {
+				trimmed := strings.TrimSpace(line)
+				isData := strings.HasPrefix(trimmed, "data:")
+				isDone := isData && strings.TrimSpace(strings.TrimPrefix(trimmed, "data:")) == "[DONE]"
+				switch {
+				case acc.Len() < limit:
+					acc.WriteString(streamDelta(line))
+				case isData && !isDone:
+					// 已达采集上限但仍有后续内容：日志只保留了开头，完整长度未知
+					res.SnippetCapped = true
+				}
 			}
 			if _, werr := io.WriteString(w, line); werr != nil {
 				res.Snippet = truncate(acc.String(), limit) // 客户端断开，按成功处理

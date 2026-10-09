@@ -2,8 +2,11 @@ package gateway_test
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -295,4 +298,108 @@ func TestAuthStyles(t *testing.T) {
 	if q, _ := mock2.lastQuery.Load().(string); q != "k3" {
 		t.Fatalf("query 鉴权未注入 key: %q", q)
 	}
+}
+
+// TestSnippetTruncation 校验长回复的截断标记：
+// 非流式应记录原始长度，流式应标记"达到采集上限"，
+// 前端据此明确提示，而不是让用户误以为页面没展示全。
+func TestSnippetTruncation(t *testing.T) {
+	const longLen = 5000
+	reply := strings.Repeat("A", longLen)
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"mock-chat"}]}`))
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var payload map[string]any
+		_ = json.Unmarshal(body, &payload)
+		if stream, _ := payload["stream"].(bool); stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			fl := w.(http.Flusher)
+			// 分片推送超长内容，验证只保留开头并标记 capped
+			for i := 0; i < 50; i++ {
+				chunk, _ := json.Marshal(map[string]any{
+					"id": "1", "choices": []any{map[string]any{"delta": map[string]any{"content": reply[:100]}}},
+				})
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				fl.Flush()
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			fl.Flush()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "chatcmpl-long", "model": "mock-chat",
+			"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": reply}}},
+			"usage":   map[string]any{"prompt_tokens": 1, "completion_tokens": longLen},
+		})
+	}))
+	defer mock.Close()
+
+	// 默认 payload_limit 为 2000，5000 字的回复必然被截断
+	h := newTestGateway(t, []model.Channel{{
+		ID: "c1", Name: "长回复上游", APIKey: "sk-x",
+		BaseURL: mock.URL + "/v1", Models: []string{"mock-chat"}, Enabled: true,
+	}})
+
+	rec := post(t, h, "/v1/chat/completions", `{"model":"mock-chat","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("非流式请求失败: %d %s", rec.Code, rec.Body.String())
+	}
+	items := firstLogItems(t, h, 1)
+	if len(items) == 0 {
+		t.Fatal("应有日志记录")
+	}
+	it := items[0]
+	if it.ResponseSnippet == "" {
+		t.Fatal("应记录回复摘要")
+	}
+	if len(it.ResponseSnippet) >= longLen {
+		t.Fatalf("摘要应被 payload_limit 截断，实际长度 %d", len(it.ResponseSnippet))
+	}
+	if it.ResponseSnippetFull != longLen {
+		t.Fatalf("应记录原始长度 %d，实际 %d", longLen, it.ResponseSnippetFull)
+	}
+	if !it.SnippetTruncated() {
+		t.Fatal("SnippetTruncated() 应为 true")
+	}
+	if !strings.Contains(it.ResponseSnippet, "已截断") {
+		t.Fatalf("摘要末尾应标注截断: %q", it.ResponseSnippet)
+	}
+
+	// 流式：超过采集上限应标记 ResponseCapped（完整长度未知）
+	rec = post(t, h, "/v1/chat/completions", `{"model":"mock-chat","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("流式请求失败: %d", rec.Code)
+	}
+	items = firstLogItems(t, h, 1)
+	if len(items) == 0 {
+		t.Fatal("流式应有日志记录")
+	}
+	if !items[0].ResponseCapped {
+		t.Fatalf("超长流式回复应标记 ResponseCapped，摘要长度=%d", len(items[0].ResponseSnippet))
+	}
+	if items[0].ResponseSnippetFull != 0 {
+		t.Fatalf("流式无法得知完整长度，ResponseSnippetFull 应为 0，实际 %d", items[0].ResponseSnippetFull)
+	}
+}
+
+// firstLogItems 读取第一页日志。
+func firstLogItems(t *testing.T, h http.Handler, n int) []model.LogEntry {
+	t.Helper()
+	rec := adminDo(t, h, "adm-test", http.MethodGet, "/admin/logs?page=1&page_size="+strconv.Itoa(n), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("读取日志失败: %d %s", rec.Code, rec.Body.String())
+	}
+	var page struct {
+		Items []model.LogEntry `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatalf("解析日志失败: %v", err)
+	}
+	return page.Items
 }

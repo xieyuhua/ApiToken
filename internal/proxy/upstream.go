@@ -256,11 +256,25 @@ func timeoutFor(cfg *config.Config, ch model.Channel, stream bool) time.Duration
 }
 
 func truncate(s string, n int) string {
+	out, _ := truncateFull(s, n)
+	return out
+}
+
+// truncateFull 与 truncate 相同，但同时返回截断前的原始字符数（未截断时为 0）。
+// 用于日志详情明确告知"这是存储上限导致的截断"，而不是页面展示不全。
+//
+// 按**字符**（rune）而非字节截断：中文回复 2000 字节只有约 660 字，
+// 按字节切会严重少存内容，也是"回复内容看起来不完整"的根因。
+func truncateFull(s string, n int) (string, int) {
 	s = strings.TrimSpace(s)
-	if len(s) <= n {
-		return s
+	if n <= 0 {
+		return s, 0
 	}
-	return s[:n] + "..."
+	rs := []rune(s)
+	if len(rs) <= n {
+		return s, 0
+	}
+	return string(rs[:n]) + fmt.Sprintf("... [已截断，原始 %d 字]", len(rs)), len(rs)
 }
 
 // NewRequestID 生成请求 ID。

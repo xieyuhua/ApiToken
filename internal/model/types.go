@@ -146,6 +146,20 @@ type LogEntry struct {
 	Endpoint        string `json:"endpoint,omitempty"`
 	RequestSnippet  string `json:"request_snippet,omitempty"`
 	ResponseSnippet string `json:"response_snippet,omitempty"`
+
+	// RequestSnippetFull / ResponseSnippetFull 为截断前的原始字符数；
+	// 0 表示未截断。前端据此提示"内容已按 payload_limit 截断"，避免误以为展示不全。
+	RequestSnippetFull  int `json:"request_snippet_full,omitempty"`
+	ResponseSnippetFull int `json:"response_snippet_full,omitempty"`
+
+	// ResponseCapped 表示流式回复超过采集上限：日志只保存了开头一部分，
+	// 完整长度未知（网关不缓存完整回复）。与 ResponseSnippetFull 语义不同。
+	ResponseCapped bool `json:"response_capped,omitempty"`
+}
+
+// SnippetTruncated 是否存在被截断的摘要。
+func (l LogEntry) SnippetTruncated() bool {
+	return l.RequestSnippetFull > 0 || l.ResponseSnippetFull > 0 || l.ResponseCapped
 }
 
 // OK 是否成功。

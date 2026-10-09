@@ -1,5 +1,5 @@
 server:
-  addr: :18104
+  addr: :18125
   request_timeout: 5m0s
   stream_timeout: 15m0s
   read_timeout: 1m0s
@@ -30,7 +30,7 @@ logging:
   access_log: true
   keep_logs: 800
   record_payload: true
-  payload_limit: 2000
+  payload_limit: 8000
 upstream:
   default_timeout: 2m0s
   connect_timeout: 10s

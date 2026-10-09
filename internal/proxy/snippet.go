@@ -8,9 +8,11 @@ import (
 
 // relayResult 单次上游调用的结果（用于日志记录）。
 type relayResult struct {
-	Usage    Usage
-	Snippet  string // 响应内容摘要
-	Endpoint string // 实际请求的上游地址
+	Usage         Usage
+	Snippet       string // 响应内容摘要
+	SnippetFull   int    // 截断前的原始字符数，0 = 未截断
+	SnippetCapped bool   // 流式是否因达到采集上限而只保留了开头
+	Endpoint      string // 实际请求的上游地址
 }
 
 // payloadLimit 摘要长度上限。
@@ -49,10 +51,10 @@ func (h *Handler) requestSnippet(payload map[string]any) string {
 	return truncate(sb.String(), h.payloadLimit())
 }
 
-// responseSnippet 从非流式响应中提取内容摘要。
-func (h *Handler) responseSnippet(data []byte) string {
+// responseSnippet 从非流式响应中提取内容摘要，同时返回截断前的原始字符数。
+func (h *Handler) responseSnippet(data []byte) (string, int) {
 	if !h.recordPayload() {
-		return ""
+		return "", 0
 	}
 	var out struct {
 		Choices []struct {
@@ -63,10 +65,10 @@ func (h *Handler) responseSnippet(data []byte) string {
 	}
 	if err := json.Unmarshal(data, &out); err == nil && len(out.Choices) > 0 {
 		if c := out.Choices[0].Message.Content; c != "" {
-			return truncate(c, h.payloadLimit())
+			return truncateFull(c, h.payloadLimit())
 		}
 	}
-	return truncate(string(data), h.payloadLimit()/2)
+	return truncateFull(string(data), h.payloadLimit()/2)
 }
 
 // contentText 兼容字符串与多模态数组两种 content 形式。
