@@ -42,13 +42,32 @@ func NewHandler(st *store.Store, cfg *config.Config, log *slog.Logger) *Handler 
 	}
 }
 
+// relayRequest 描述一次转发的入站上下文。
+//
+// /v1/chat/completions 与 /v1/messages 共用同一套渠道候选、鉴权、故障转移与日志逻辑，
+// 差异只在三处：请求体如何解析、响应如何写回、出错时用什么错误结构。
+// 新增入站协议时只需实现 responder，不必再复制一遍故障转移循环。
+type relayRequest struct {
+	// Payload 已转换为 OpenAI 格式的请求体。
+	Payload map[string]any
+	// Model 客户端请求的原始模型名（用于日志与错误提示）。
+	Model string
+	// Stream 是否为流式。
+	Stream bool
+	// Entry 日志条目的初始字段。
+	Entry model.LogEntry
+	// Resp 响应写回策略。
+	Resp responder
+	// WriteErr 出错时的回包函数（不同协议的错误体结构不同）。
+	WriteErr func(w http.ResponseWriter, status int, code, message, typ string)
+	// BuildOpts 上游请求构造选项。
+	BuildOpts BuildOpts
+}
+
 // ChatCompletions POST /v1/chat/completions
 func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	reqID := r.Header.Get("X-Request-Id")
-	if reqID == "" {
-		reqID = NewRequestID()
-	}
+	reqID := requestIDOf(r)
 	entry := model.LogEntry{
 		Time: start, RequestID: reqID, Method: r.Method, Path: r.URL.Path,
 		ClientIP: clientIP(r),
@@ -79,13 +98,33 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	entry.Stream = stream
 	entry.RequestSnippet = h.requestSnippet(payload)
 
+	h.serve(w, r, relayRequest{
+		Payload:  payload,
+		Model:    modelName,
+		Stream:   stream,
+		Entry:    entry,
+		Resp:     openAIResponder{},
+		WriteErr: WriteError,
+	})
+}
+
+// serve 是两个入站协议共用的转发核心：渠道候选、故障转移、统计与访问日志都在这里。
+func (h *Handler) serve(w http.ResponseWriter, r *http.Request, in relayRequest) {
+	start := time.Now()
+	entry := in.Entry
+	entry.Time = start
+	reqID := entry.RequestID
+	payload := in.Payload
+	modelName := in.Model
+	stream := in.Stream
+
 	candidates := h.store.Candidates(modelName)
 	if len(candidates) == 0 {
 		entry.Status = http.StatusNotFound
 		entry.LatencyMS = time.Since(start).Milliseconds()
 		entry.Error = "无可用渠道"
 		h.finish(entry)
-		WriteError(w, http.StatusNotFound, "model_not_found",
+		in.WriteErr(w, http.StatusNotFound, "model_not_found",
 			fmt.Sprintf("模型 %q 没有可用的渠道，请先在管理端添加/启用渠道", modelName), "")
 		return
 	}
@@ -102,7 +141,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		entry.Attempts = i + 1
 		attStart := time.Now()
 
-		res, uerr := h.attempt(w, r, reqID, cand, payload, stream)
+		res, uerr := h.attempt(w, r, reqID, cand, payload, stream, in.Resp, in.BuildOpts)
 		latency := time.Since(attStart)
 		if uerr == nil {
 			h.store.RecordChannelAttempt(cand.ID, true, latency, res.Usage.Prompt, res.Usage.Completion, "")
@@ -119,6 +158,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			entry.PromptTokens = res.Usage.Prompt
 			entry.CompletionTokens = res.Usage.Completion
 			entry.LatencyMS = time.Since(start).Milliseconds()
+			h.logConvert(in.Resp, modelName, cand.ID)
 			h.finish(entry)
 			return
 		}
@@ -160,17 +200,17 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if lastErr == nil {
-		WriteError(w, http.StatusBadGateway, "no_channel", "没有可用渠道", "")
+		in.WriteErr(w, http.StatusBadGateway, "no_channel", "没有可用渠道", "")
 		return
 	}
 	if lastErr.Transport != nil && r.Context().Err() == nil {
 		if lastErr.ChannelID != "" {
 			w.Header().Set("X-Gateway-Channel", lastErr.ChannelID)
 		}
-		WriteError(w, http.StatusBadGateway, "upstream_error", lastErr.Error(), "")
+		in.WriteErr(w, http.StatusBadGateway, "upstream_error", lastErr.Error(), "")
 		return
 	}
-	// 透传上游错误体，便于排查（如 401 key 无效、429 限流）
+	// 上游返回了错误状态码：按入站协议的错误结构回包，便于客户端正确解析
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("X-Request-Id", reqID)
 	if lastErr.ChannelID != "" {
@@ -178,6 +218,13 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	if lastErr.UpstreamModel != "" {
 		w.Header().Set("X-Gateway-Upstream-Model", lastErr.UpstreamModel)
+	}
+	if isAnthropic(in.Resp) {
+		// Anthropic 客户端按 error.type 分支处理，拿到 OpenAI 结构会显示成未知错误
+		w.WriteHeader(lastErr.Status)
+		writeAnthropicError(w, lastErr.Status, anthropicErrorType(lastErr.Status),
+			describeError(lastErr.Body, lastErr.Status))
+		return
 	}
 	w.WriteHeader(lastErr.Status)
 	body := lastErr.Body
@@ -187,15 +234,28 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
+// logConvert 记录协议转换耗时与被丢弃的字段（仅发生转换时输出）。
+func (h *Handler) logConvert(resp responder, modelName, channelID string) {
+	ar, ok := resp.(*anthropicResponder)
+	if !ok {
+		return
+	}
+	attrs := []any{"model", modelName, "channel", channelID, "convert_ms", ar.ConvertMs()}
+	if len(ar.dropped) > 0 {
+		attrs = append(attrs, "dropped", strings.Join(ar.dropped, ","))
+	}
+	h.log.Info("protocol_convert", attrs...)
+}
+
 // attempt 向单个渠道发起请求，成功时写出响应（返回用量与摘要信息）。
 func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, reqID string, cand model.Candidate,
-	payload map[string]any, stream bool) (res relayResult, uerr *upstreamError) {
+	payload map[string]any, stream bool, resp responder, opts BuildOpts) (res relayResult, uerr *upstreamError) {
 
 	timeout := timeoutFor(h.cfg, cand.Channel, stream)
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
-	req, err := h.BuildRequest(ctx, cand, payload, stream)
+	req, err := h.BuildRequestOpts(ctx, cand, payload, stream, opts)
 	if err != nil {
 		return res, &upstreamError{Transport: err, ChannelID: cand.ID}
 	}
@@ -209,53 +269,50 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, reqID string, 
 		}
 	}()
 
-	resp, err := h.client.Do(req)
+	httpResp, err := h.client.Do(req)
 	if err != nil {
 		return res, &upstreamError{Transport: err, ChannelID: cand.ID}
 	}
-	defer resp.Body.Close()
+	defer httpResp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
-		res.Snippet = describeError(body, resp.StatusCode)
-		return res, &upstreamError{Status: resp.StatusCode, Body: body, ChannelID: cand.ID}
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(httpResp.Body, 16<<10))
+		res.Snippet = describeError(body, httpResp.StatusCode)
+		return res, &upstreamError{Status: httpResp.StatusCode, Body: body, ChannelID: cand.ID}
 	}
 
 	var rerr *upstreamError
 	if stream {
-		res, rerr = h.relayStream(w, resp, cand, reqID)
+		res, rerr = h.relayStream(w, httpResp, cand, reqID, resp)
 	} else {
-		res, rerr = h.relayJSON(w, resp, reqID, cand)
+		res, rerr = h.relayJSON(w, httpResp, reqID, cand, resp)
 	}
 	res.Endpoint = req.URL.String()
 	return res, rerr
 }
 
-func (h *Handler) relayJSON(w http.ResponseWriter, resp *http.Response, reqID string, cand model.Candidate) (relayResult, *upstreamError) {
+func (h *Handler) relayJSON(w http.ResponseWriter, resp *http.Response, reqID string, cand model.Candidate,
+	rp responder) (relayResult, *upstreamError) {
+
 	var res relayResult
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return res, &upstreamError{Transport: err}
 	}
 	res.Usage = ParseUsage(data)
+	// 摘要取上游原文（转换前的诊断价值更高）
 	res.Snippet, res.SnippetFull = h.responseSnippet(data)
-	w.Header().Set("Content-Type", pickCT(resp.Header.Get("Content-Type")))
 	w.Header().Set("X-Request-Id", reqID)
-	w.Header().Set("X-Gateway-Channel", cand.ID)
-	w.Header().Set("X-Gateway-Channel-Name", cand.Name)
-	w.Header().Set("X-Gateway-Upstream-Model", cand.UpstreamModel)
-	copyHeader(w.Header(), resp.Header, "Openai-Organization", "Openai-Processing-Ms", "X-Ratelimit-Limit-Requests", "X-Ratelimit-Remaining-Requests")
-	w.WriteHeader(resp.StatusCode)
-	if _, err := w.Write(data); err != nil {
-		h.log.Warn("写回响应失败", "err", err)
-	}
+	rp.JSON(w, resp.StatusCode, data, resp.Header, cand)
 	return res, nil
 }
 
-func (h *Handler) relayStream(w http.ResponseWriter, resp *http.Response, cand model.Candidate, reqID string) (relayResult, *upstreamError) {
+func (h *Handler) relayStream(w http.ResponseWriter, resp *http.Response, cand model.Candidate,
+	reqID string, rp responder) (relayResult, *upstreamError) {
+
 	var res relayResult
 	reader := bufio.NewReaderSize(resp.Body, 32*1024)
-	// 先探测首字节，确保在写出响应头之前确认上游确实有数据
+	// 先探测首字节，确保在写出响应头之前确认上游确实有数据（此时仍可切换渠道）
 	if _, err := reader.Peek(1); err != nil && err != io.EOF {
 		return res, &upstreamError{Transport: err, ChannelID: cand.ID}
 	}
@@ -272,47 +329,77 @@ func (h *Handler) relayStream(w http.ResponseWriter, resp *http.Response, cand m
 		flusher.Flush()
 	}
 
+	writer := rp.Stream()
+	write := func(b []byte) bool {
+		if len(b) == 0 {
+			return true
+		}
+		if _, err := w.Write(b); err != nil {
+			return false
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return true
+	}
+	// Anthropic 需要在正文之前先发 message_start
+	if !write(writer.Begin()) {
+		return res, nil
+	}
+
 	var acc strings.Builder
 	limit := h.payloadLimit()
 	collect := h.recordPayload()
 	for {
-		line, err := reader.ReadString('\n')
+		line, readErr := reader.ReadString('\n')
 		if line != "" {
-			if u := ParseUsageStream(line); u.Total() > 0 {
-				res.Usage = u
-			}
-			if collect {
-				trimmed := strings.TrimSpace(line)
-				isData := strings.HasPrefix(trimmed, "data:")
-				isDone := isData && strings.TrimSpace(strings.TrimPrefix(trimmed, "data:")) == "[DONE]"
-				switch {
-				case acc.Len() < limit:
-					acc.WriteString(streamDelta(line))
-				case isData && !isDone:
-					// 已达采集上限但仍有后续内容：日志只保留了开头，完整长度未知
-					res.SnippetCapped = true
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "data:") {
+				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+				isDone := payload == "[DONE]"
+				if u := ParseUsageStream(line); u.Total() > 0 {
+					res.Usage = u
+				}
+				if collect {
+					switch {
+					case acc.Len() < limit:
+						acc.WriteString(streamDelta(line))
+					case !isDone:
+						// 已达采集上限但仍有后续内容：日志只保留了开头，完整长度未知
+						res.SnippetCapped = true
+					}
+				}
+				if !write(writer.Line(payload, isDone)) {
+					res.Snippet = truncate(acc.String(), limit) // 客户端断开，按成功处理
+					return res, nil
+				}
+				if isDone {
+					break
 				}
 			}
-			if _, werr := io.WriteString(w, line); werr != nil {
-				res.Snippet = truncate(acc.String(), limit) // 客户端断开，按成功处理
-				return res, nil
-			}
-			if flusher != nil {
-				flusher.Flush()
-			}
-			if strings.HasPrefix(strings.TrimSpace(line), "data:") && strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "data:")) == "[DONE]" {
-				res.Snippet = truncate(acc.String(), limit)
-				return res, nil
-			}
 		}
-		if err != nil {
-			if err != io.EOF {
-				h.log.Warn("流式转发中断", "channel", cand.ID, "err", err)
+		if readErr != nil {
+			if readErr != io.EOF {
+				h.log.Warn("流式转发中断", "channel", cand.ID, "err", readErr)
 			}
-			res.Snippet = truncate(acc.String(), limit)
-			return res, nil
+			break
 		}
 	}
+	// 收尾：OpenAI 直通为空；Anthropic 需补 content_block_stop + message_delta + message_stop
+	write(writer.End())
+	// 转换器可能自带用量（Anthropic 从末尾数据块解析）
+	if u := writer.Usage(); u.Total() > 0 {
+		res.Usage = u
+	}
+	res.Snippet = truncate(acc.String(), limit)
+	return res, nil
+}
+
+func requestIDOf(r *http.Request) string {
+	if id := r.Header.Get("X-Request-Id"); id != "" {
+		return id
+	}
+	return NewRequestID()
 }
 
 // ListModels GET /v1/models

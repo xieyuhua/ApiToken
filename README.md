@@ -33,6 +33,7 @@ go build -o apitoken ./cmd/gateway
 | http://127.0.0.1:8080/diagnostics | 测试：网关自检、渠道体检、出网诊断 |
 | http://127.0.0.1:8080/settings | 设置：修改网关密钥、路由、日志、超时（保存即生效） |
 | http://127.0.0.1:8080/v1 | OpenAI 兼容接口（网关密钥 `sk-gateway-0001`） |
+| http://127.0.0.1:8080/v1/messages | Anthropic Messages 兼容接口（同一把网关密钥，见 9.6） |
 | http://127.0.0.1:8080/admin/… | 管理 API |
 | http://127.0.0.1:8080/healthz | 健康检查 |
 
@@ -100,7 +101,10 @@ go build -o apitoken ./cmd/gateway
 | 可走 `/chat/completions` 的模型 | `deepseek-v4-pro`、`deepseek-v4.1-flash`、`kimi-k2.7-code`、`glm-5.3`、`minimax-m3` 等 |
 | 文档 | https://open-code.ai/docs/zen |
 
-⚠️ Zen 按模型族分端点：Claude 系走 `/messages`、GPT 系走 `/responses`、Gemini 走 `/models/{id}`，只有 Chat Completions 类模型能直接经本网关转发。若要接 Claude/GPT，在渠道里把「Chat 路径」改成对应路径（`/messages` 或 `/responses`），并自行做协议转换。
+⚠️ Zen 按模型族分端点：Claude 系走 `/messages`、GPT 系走 `/responses`、Gemini 走 `/models/{id}`。
+本网关**只做协议透传，不会转换请求体**——把渠道的「Chat 路径」改成 `/messages` 或 `/responses` 只会让上游收到
+OpenAI 格式的 body 从而返回 400。Claude 系模型请走第 9.6 节的 Anthropic 兼容入口；
+GPT 系（`/responses`）与 Gemini 暂未支持转换。
 
 ### 2.5 阶跃星辰 StepFun
 
@@ -220,6 +224,8 @@ routes:
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
+| POST | `/v1/chat/completions` | OpenAI 兼容对话（含 SSE），详见第 4 节 |
+| POST | `/v1/messages` | **Anthropic Messages 兼容对话**（含 SSE），详见第 9.6 节 |
 | GET | `/admin/api-info` | 版本、平台预设、路由策略、鉴权状态 |
 | GET | `/admin/config` | 当前配置（密钥脱敏） |
 | GET | `/admin/channels` | 渠道列表（`?reveal=1` 返回完整 Key） |
@@ -266,7 +272,7 @@ routes:
 | `routing.strategy` | `priority_round_robin` | 路由策略，见第 5 节（热更新） |
 | `routing.max_attempts` | `3` | 单请求最多尝试的渠道数（热更新） |
 | `routing.retry_status` | `[408,409,425,429,500,502,503,504,529]` | 命中这些状态码才切换渠道（热更新） |
-| `routing.force_stream_usage` | `false` | 开启后自动注入 `stream_options` 统计流式 token（热更新） |
+| `routing.force_stream_usage` | `false` | 开启后自动注入 `stream_options` 统计流式 token（热更新）。<br/>`/v1/messages` 无论该开关如何都会开启（Anthropic 靠末尾数据块取用量） |
 | `logging.level` | `info` | 日志级别 |
 | `logging.access_log` | — | 是否打访问日志（热更新） |
 | `logging.keep_logs` | `1000` | 内存保留的日志条数，重启清空（热更新，会顺带裁剪现有日志） |
@@ -383,6 +389,59 @@ Key 无效或未生效。DeepSeek、商汤、腾讯 WorkBuddy 的 Key 各自独�
 - 渠道弹窗同样提供「查看已保存」，可取回该渠道的完整 API Key
 - 明文接口仍需管理令牌，未授权返回 401；请只在受信任环境使用，注意截图与旁观
 
+### 9.6 Anthropic Messages 兼容入口（`/v1/messages`）
+
+Claude Code、Cline 的 Anthropic 模式等客户端只发 Anthropic 协议。这个端点让它们**无需任何改动**
+就能用上网关的路由、故障转移、用量统计与调用日志：
+
+```bash
+curl http://127.0.0.1:8080/v1/messages \
+  -H "x-api-key: sk-gateway-0001" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"deepseek-chat","max_tokens":1024,
+       "system":"你是助手",
+       "messages":[{"role":"user","content":"你好"}]}'
+```
+
+在 Claude Code 里只需改 base URL：
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
+export ANTHROPIC_AUTH_TOKEN=sk-gateway-0001
+```
+
+**上游不需要支持 Anthropic**：请求会被转换成 OpenAI Chat Completions 发往各渠道配置的
+OpenAI 兼容端点，响应再转回 Anthropic Messages（含 SSE 事件序列）。
+
+已支持的能力：
+
+| 能力 | 说明 |
+| --- | --- |
+| 基础对话 / 流式 | 文本增量、`stop_reason` 映射（`stop`→`end_turn`、`length`→`max_tokens`） |
+| 顶层 `system` | 转成 OpenAI 的首条 system 消息 |
+| 工具调用 | `input_schema` ↔ `parameters`、`tool_use` ↔ `tool_calls`、`tool_result` → `role:tool` 消息 |
+| `tool_choice` | `auto` / `any`(→`required`) / `none` / 指定工具 |
+| 思维链 | `thinking.enabled` ↔ `reasoning_content`，输出为 Anthropic `thinking` 块 |
+| 多模态 | `image` 的 base64 / url 源 ↔ `image_url`（data URI） |
+| 采样参数 | `temperature`、`top_p`、`top_k`、`stop_sequences` |
+| 用量统计 | 自动开启 `stream_options.include_usage`，token 计入看板与日志 |
+
+**严格校验**：不支持的字段（如 `document` 块、`server_tool_use`、`mcp_servers`）会明确返回 400
+并说明原因，而不是静默丢弃——否则调用方会误以为「thinking 已开启」「图片已传入」。
+确实无法映射但无副作用的字段（如 `metadata`）会被丢弃，并记录在响应头
+`X-Gateway-Convert-Ms` 与日志的 `protocol_convert` 里。
+
+两个已知限制：
+
+- **思维链顺序**：Anthropic 要求 `thinking` 块排在正文之前。若上游把思维链放在正文之后
+  才会返回，该段思维链会被丢弃（Anthropic 协议无法表达这种顺序）
+- **上游返回 `function_call`（旧式函数调用）**：会被当作 `tool_calls` 处理；上游只返回
+  旧式格式时，`tool_use` 块里 `input` 会是空对象
+
+如果你的客户端用 OpenAI 协议（含绝大多数第三方客户端），用 `/v1/chat/completions` 即可，
+不需要这个端点。
+
 ---
 
 ## 10. 项目结构
@@ -392,7 +451,12 @@ cmd/gateway/           # 入口：配置加载、HTTP 服务、优雅退出
 internal/config/       # YAML 配置解析、默认值、热更新 Runtime
 internal/model/        # 渠道、路由、统计、日志数据结构
 internal/store/        # 渠道路由解析、负载均衡、统计、访问日志、持久化
-internal/proxy/        # OpenAI 协议转发、SSE 流式、故障转移、上游探测
+internal/proxy/        # 转发核心（鉴权后共用）：渠道故障转移、SSE 转发、上游探测
+  ├─ chat.go           #   OpenAI 兼容入口 + serve() 转发核心
+  ├─ messages.go       #   Anthropic Messages 入口（请求转换后走同一个 serve）
+  ├─ relay.go          #   响应写回策略：OpenAI 直通 / Anthropic 转换
+  ├─ upstream.go       #   上游请求构造（鉴权、路径、extra_*）
+  └─ translate/        # 协议转换（Anthropic ⇄ OpenAI），独立可测
 internal/admin/        # 管理 REST API（handler / settings / logs / diagnostics）
 internal/gateway/      # 路由组装与中间件（鉴权/CORS/恢复/请求 ID）+ 端到端测试
 internal/webui/        # 内嵌管理页面
@@ -404,10 +468,28 @@ internal/webui/        # 内嵌管理页面
   └─ static/           #   app.js（公共）· combo.js（可搜索下拉）· chat.js · style.css
 tools/webui_test.js    # 前端交互回归测试（零依赖，node 直接跑）
 config.yaml            # 配置示例（含逐项注释）
-Makefile               # build / run / test / vet / fmt / clean
+Makefile               # build / run / test / test-web / vet / fmt / clean
 ```
 
-### 10.1 前端的可搜索下拉（Combo 组件）
+### 10.1 协议转换层
+
+两个入站协议（OpenAI、Anthropic）共用同一套转发核心，差异被收敛到 `responder` 接口：
+
+```
+客户端 ──┬─ POST /v1/chat/completions ──→ openAIResponder  ─┐
+         └─ POST /v1/messages ──→ translate.RequestToOpenAI ─┤
+                                                            ├─→ serve()：渠道候选、
+                                                                │   故障转移、统计、日志
+         ┌─ openAIResponder ←───────────────────────────────┤
+客户端 ←─└─ anthropicResponder ← translate.ResponseToAnthropic ┘
+```
+
+- 新增入站协议只需实现 `responder`，不必复制故障转移循环
+- `translate` 包不依赖网关其余部分，可单独测试（`internal/proxy/translate/*_test.go`）
+- Anthropic 流式需要重放 `message_start → content_block_* → message_delta → message_stop`
+  事件序列，注意 Anthropic **没有 `[DONE]`**，且 `thinking` 块必须排在正文之前
+
+### 10.2 前端的可搜索下拉（Combo 组件）
 
 模型动辄数百个，原生 `<select>` 无法检索，因此控制台与对话页共用 `internal/webui/static/combo.js`：
 
@@ -437,8 +519,10 @@ Makefile               # build / run / test / vet / fmt / clean
 
 ### 11.2 测试分层
 
-- **后端**：`internal/gateway` 下 9 个 `*_test.go`，覆盖非流式/流式转发、故障转移、鉴权、
-  渠道与路由 CRUD、日志分页与聚合、设置热更新、自检、以及控制台页面的结构断言。
+- **后端**：`internal/gateway` 下 10 个 `*_test.go`，覆盖非流式/流式转发、故障转移、鉴权、
+  渠道与路由 CRUD、日志分页与聚合、设置热更新、自检、Anthropic Messages 端点
+  （协议转换、工具调用往返、思维链、流式事件序列、严格校验）；`internal/proxy/translate`
+  有独立的协议转换单元测试。
 - **前端**：`tools/webui_test.js`，零依赖、Node 直接跑，内置极简 DOM stub，覆盖 Combo 组件
   （过滤/高亮/分组/键盘/卸载）与路由弹窗（编辑=更新、改名需确认、自由输入）：
 

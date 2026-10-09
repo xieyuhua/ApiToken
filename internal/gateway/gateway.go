@@ -46,6 +46,9 @@ func (s *Server) Handler() http.Handler {
 
 	// OpenAI 兼容接口
 	mux.Handle("POST /v1/chat/completions", s.clientAuth(s.proxy.ChatCompletions))
+	// Anthropic Messages 兼容接口：请求与响应都按 Anthropic 协议，
+	// 上游仍走各渠道的 OpenAI 兼容端点，客户端无需任何改动即可接入。
+	mux.Handle("POST /v1/messages", s.clientAuth(s.proxy.Messages))
 	mux.Handle("GET /v1/models", s.clientAuth(s.proxy.ListModels))
 	mux.HandleFunc("GET /v1/models/{model}", s.clientAuth(func(w http.ResponseWriter, r *http.Request) {
 		want := r.PathValue("model")

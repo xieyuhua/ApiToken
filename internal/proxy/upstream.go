@@ -145,8 +145,24 @@ func (e *upstreamError) retryable(retryStatus []int) bool {
 	return false
 }
 
+// BuildOpts 上游请求构造选项。
+type BuildOpts struct {
+	// ForceUsage 强制注入 stream_options.include_usage。
+	//
+	// Anthropic 端点依赖它：OpenAI 流式把用量放在最后一个数据块，
+	// 不开启则流式请求的 token 统计恒为 0。
+	ForceUsage bool
+}
+
 // BuildRequest 构造发往上游的请求（鉴权与路径均取自渠道配置）。
 func (h *Handler) BuildRequest(ctx context.Context, cand model.Candidate, payload map[string]any, stream bool) (*http.Request, error) {
+	return h.BuildRequestOpts(ctx, cand, payload, stream, BuildOpts{})
+}
+
+// BuildRequestOpts 是 BuildRequest 的可配置版本。
+func (h *Handler) BuildRequestOpts(ctx context.Context, cand model.Candidate, payload map[string]any,
+	stream bool, opts BuildOpts) (*http.Request, error) {
+
 	ch := cand.Channel
 	body := make(map[string]any, len(payload)+4)
 	for k, v := range payload {
@@ -157,7 +173,8 @@ func (h *Handler) BuildRequest(ctx context.Context, cand model.Candidate, payloa
 	for k, v := range ch.ExtraParams {
 		body[k] = v
 	}
-	if stream && h.cfg.Routing.ForceStreamUsage {
+	forceUsage := opts.ForceUsage || h.cfg.Routing.ForceStreamUsage
+	if stream && forceUsage {
 		if so, ok := body["stream_options"].(map[string]any); ok {
 			so["include_usage"] = true
 		} else {
