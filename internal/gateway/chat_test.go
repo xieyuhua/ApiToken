@@ -102,21 +102,27 @@ func TestChatModelSearchableCombo(t *testing.T) {
 	if strings.Contains(body, `<select id="model"`) {
 		t.Fatal("原生 select 无法搜索，应替换为组合框")
 	}
+	// 必须复用 /static/combo.js，不要再自带一份实现
+	if !strings.Contains(body, "/static/combo.js") {
+		t.Fatal("对话页未引入 combo.js")
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/static/chat.js", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	js := rec.Body.String()
 	for _, want := range []string{
-		"function renderModelList(", "function pickModel(", "function initModelCombo(",
-		"function hl(", "MODEL_LIST_MAX", "initModelCombo();",
+		"function initModelCombo(", "Combo.attach(inp", "function modelOptions(",
+		"modelChannelText(m)", "initModelCombo();",
 	} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("chat.js 缺少 %q", want)
 		}
 	}
-	// 搜索必须同时支持模型名与渠道名（可按渠道反查模型）
-	if !strings.Contains(js, "modelChannelText(m).toLowerCase().includes(kw)") {
-		t.Fatal("搜索应同时匹配渠道名，便于按渠道反查模型")
+	// 重复实现（与 combo.js 重复的渲染/高亮/键盘逻辑）应当已删除
+	for _, gone := range []string{"function renderModelList(", "function pickModel(", "MODEL_LIST_MAX", "function hl("} {
+		if strings.Contains(js, gone) {
+			t.Fatalf("chat.js 仍自带一份下拉实现（%q），应复用 combo.js", gone)
+		}
 	}
 }

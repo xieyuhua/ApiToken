@@ -128,7 +128,7 @@
 </dialog>
 
 <dialog id="rtDlg">
-  <div class="dlg-head">添加/更新路由</div>
+  <div class="dlg-head" id="rtDlgHead">添加路由</div>
   <div class="dlg-body">
     <div class="grid">
       <div>
@@ -179,6 +179,7 @@
 <script src="/static/combo.js"></script>
 <script>
 let editingId = null;
+let routeEditingModel = '';   // 非空 = 正在更新这条路由（用于标题提示与改名确认）
 
 async function refresh() {
   try {
@@ -550,13 +551,11 @@ async function loadKnownModelsFromLogs() {
 /* ===== 可搜索下拉（Combo 组件） ===== */
 const comboCtls = {};
 
-/** 挂载（或重新挂载）一个可搜索下拉 */
+/** 挂载（或重新挂载）一个可搜索下拉；Combo.attach 会自动卸载旧实例 */
 function mountCombo(id, def) {
   const input = $(id);
   if (!input) return null;
-  const prev = comboCtls[id];
   comboCtls[id] = Combo.attach(input, def);
-  if (prev) prev.list.innerHTML = '';   // 清理旧列表内容
   return comboCtls[id];
 }
 
@@ -604,7 +603,6 @@ function mountRouteCombos() {
     allowFree: true,
     freeHint: '自定义模型名（直接输入）',
     getOptions: function () { return mapModelOptions(mapPickChannel); },
-    onPick: function (v) { setMapPickModel(v); },
     emptyText: '请先选择渠道',
   });
 }
@@ -827,8 +825,6 @@ async function onMapChannelChange(chId) {
 }
 
 /** 选中映射模型后的轻量提示（值由 addRouteMap 统一读取） */
-function setMapPickModel() { /* 保留占位：以「加入路由」时的取值为准 */ }
-
 function addRouteMap() {
   const ch = Combo.value($('r_mapChannel') ) || mapPickChannel;
   if (!ch) return toast('请先选择渠道', true);
@@ -855,8 +851,12 @@ function removeRouteMap(i) {
 async function openRouteDlg(model) {
   routeChannels = [];
   routeMaps = [];
+  routeEditingModel = model ? decodeURIComponent(model) : '';
+  $('rtDlgHead').textContent = routeEditingModel ? '更新路由：' + routeEditingModel : '添加路由';
   $('r_modelHint').classList.remove('err');
-  $('r_modelHint').textContent = '可自由输入：列表里没有的名字直接敲进去即可（回车确认），输入内容会同时匹配模型名与渠道名。';
+  $('r_modelHint').textContent = routeEditingModel
+    ? '正在更新已有路由。保持对外模型名不变即为更新；改成新名字会新增一条路由（原路由保留）。'
+    : '可自由输入：列表里没有的名字直接敲进去即可（回车确认），输入内容会同时匹配模型名与渠道名。';
   $('r_enabled').value = 'true';
   // 始终取最新渠道/路由数据，避免缓存陈旧导致模型下拉为空
   try {
@@ -891,6 +891,7 @@ async function copyRoute(model) {
     const rt = window.__routes.find(r => r.model === src);
     routeChannels = [];
     routeMaps = [];
+    routeEditingModel = '';   // 复制 = 新建，不走更新语义
     if (rt) {
       routeChannels = (rt.channels || []).slice();
       routeMaps = Object.keys(rt.model_map || {}).map(ch => ({channel: ch, model: '', custom: false}));
@@ -903,6 +904,7 @@ async function copyRoute(model) {
 
     // 对外模型名留空，直接在同一个输入框里填写新名字
     setRouteModel('');
+    $('rtDlgHead').textContent = '添加路由（复制自 ' + src + '）';
     $('r_model').placeholder = '新的对外模型名，如 gpt-4o / claude-3';
     $('r_modelHint').classList.remove('err');
     $('r_modelHint').textContent = '已复制路由 ' + src + ' 的渠道顺序，请填写新的对外模型名（可直接输入，不限于列表中的模型），并为各渠道选择该模型下的上游模型名。';
@@ -918,6 +920,11 @@ async function saveRoute() {
   const modelName = routeModelValue();
   if (!modelName) return toast('请选择或填写对外模型名', true);
   if (!routeChannels.length) return toast('请至少添加一个渠道', true);
+  // 更新语义：名字必须保持不变，否则会变成「另建一条」，原路由还在
+  if (routeEditingModel && modelName !== routeEditingModel &&
+    !confirm('对外模型名已从「' + routeEditingModel + '」改为「' + modelName + '」。\n' +
+      '保存后会新增一条「' + modelName + '」路由，原来的「' + routeEditingModel + '」仍然保留。\n' +
+      '确定要改名吗？')) return;
   const modelMap = {};
   routeMaps.forEach(m => {
     const v = (m.model || '').trim();
@@ -934,7 +941,9 @@ async function saveRoute() {
     await api('/admin/routes', {method: 'POST', body: JSON.stringify(body)});
     window.__routes = null;
     $('rtDlg').close();
-    toast('路由已保存');
+    toast(modelName === routeEditingModel && routeEditingModel
+      ? '路由「' + modelName + '」已更新'
+      : '路由「' + modelName + '」已创建');
     refresh();
   } catch (e) { toast(e.message, true); }
 }

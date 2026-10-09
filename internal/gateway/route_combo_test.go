@@ -57,6 +57,54 @@ func TestRouteDialogSearchableCombos(t *testing.T) {
 	if !strings.Contains(body, "r_mapSel") || !strings.Contains(body, "Combo.attach(input") {
 		t.Fatal("行内映射模型下拉未接入 combo 组件")
 	}
+	// 重复挂载不能堆积监听器：Combo.attach 需自带卸载能力
+	req = httptest.NewRequest(http.MethodGet, "/static/combo.js", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	js = rec.Body.String()
+	for _, want := range []string{"function detach(", "detach(input);", "removeEventListener", "ctl.destroy"} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("combo.js 缺少卸载能力 %q（重复挂载会泄漏监听器）", want)
+		}
+	}
+}
+
+// TestRouteEditKeepsModelName 校验「编辑」不会被当成「新增」：
+// 对外模型名现在是自由输入框，一旦把「搜索半截词」误当成改名，
+// 保存就会多出一条同名路由；因此编辑态必须保持原名、改名需二次确认。
+func TestRouteEditKeepsModelName(t *testing.T) {
+	h := newTestGateway(t, nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	// 标题需随新增/更新切换，避免用户误以为在新增
+	for _, want := range []string{`id="rtDlgHead"`, "更新路由", "添加路由", "routeEditingModel"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("缺少 %q：编辑态与新增态必须可区分", want)
+		}
+	}
+	// 改名后果必须显式确认
+	sel := strings.Index(body, "async function saveRoute()")
+	if sel < 0 {
+		t.Fatal("缺少 saveRoute")
+	}
+	seg := body[sel : sel+900]
+	if !strings.Contains(seg, "routeEditingModel && modelName !== routeEditingModel") {
+		t.Fatal("编辑态改名应做校验，避免凭空新增路由")
+	}
+	if !strings.Contains(seg, "confirm(") {
+		t.Fatal("编辑态改名应二次确认")
+	}
+	// 自由输入只在零命中时被采纳（见 combo.js）
+	req = httptest.NewRequest(http.MethodGet, "/static/combo.js", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	js := rec.Body.String()
+	if !strings.Contains(js, "if (free && !hit.length) input.dataset.free = '1'") {
+		t.Fatal("搜索有命中时不得把输入文本当成自定义值（会把编辑变成新增）")
+	}
 }
 
 // TestRouteModelNameFreeInput 校验「对外模型名」可以直接自由输入：

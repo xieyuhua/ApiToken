@@ -224,7 +224,7 @@ func (c *Config) runtimeFromFields() *Runtime {
 		rt.MaxAttempts = 3
 	}
 	if rt.KeepLogs <= 0 {
-		rt.KeepLogs = 1000
+		rt.KeepLogs = DefaultKeepLogs
 	}
 	if rt.PayloadLimit <= 0 {
 		rt.PayloadLimit = DefaultPayloadLimit
@@ -287,7 +287,7 @@ func (c *Config) applyDefaults() {
 		c.Logging.Level = "info"
 	}
 	if c.Logging.KeepLogs <= 0 {
-		c.Logging.KeepLogs = 1000
+		c.Logging.KeepLogs = DefaultKeepLogs
 	}
 	if c.Logging.PayloadLimit <= 0 {
 		c.Logging.PayloadLimit = DefaultPayloadLimit
@@ -319,6 +319,9 @@ func (c *Config) applyDefaults() {
 // DefaultPayloadLimit 单条日志每侧保存的摘要字符数上限。
 // 2000 偏小（长回复常被腰斩），提高到 8000；仍可通过设置页热更新调整。
 const DefaultPayloadLimit = 8000
+
+// DefaultKeepLogs 内存中保留的访问日志条数（重启清空）。
+const DefaultKeepLogs = 1000
 
 func (c *Config) validate() error {
 	ids := map[string]bool{}

@@ -42,6 +42,7 @@
   function attach(input, opts) {
     if (!input) return { refresh: function () {}, close: function () {}, open: function () {} };
     opts = opts || {};
+    detach(input);   // 同一节点重复挂载前先卸载旧实例，避免监听器堆积
     const box = (input.closest && input.closest('.combo')) || input.parentElement || input;
     let list = box.querySelector('.combo-list');
     if (!list) {
@@ -93,6 +94,11 @@
         const exact = optsAll.some(o => String(o.label || o.value || '').toLowerCase() === k);
         if (!exact) free = { value: kw, label: kw, hint: opts.freeHint || '自定义名称（不在候选列表中）', free: true };
       }
+      // 只有「零命中」才允许关闭列表时自动采纳输入文本：有命中说明用户是在搜索
+      // （如敲 gpt-4 想找 gpt-4o），此时必须保持原值，否则编辑路由时会把
+      // 「搜索半截词」变成「改名」，凭空多出一条同名路由。
+      if (free && !hit.length) input.dataset.free = '1';
+      else delete input.dataset.free;
 
       const cur = currentValue();
       const rows = free ? [free].concat(hit) : hit;
@@ -133,6 +139,7 @@
           '<div class="combo-empty">仅显示前 ' + shown.length + ' 个（共 ' + rows.length +
           ' 个命中），请继续输入以缩小范围</div>');
       }
+      if (typeof opts.onRender === 'function') opts.onRender(kw || '', hit.length, optsAll.length);
     }
 
     function refresh(kw) {
@@ -147,12 +154,14 @@
 
     function close() {
       const typed = input.value.trim();
-      const typedKw = input.dataset.kw || '';   // 用户确实敲过字才允许当作自定义值
+      const typedKw = input.dataset.kw || '';    // 用户确实敲过字
+      const wasFree = input.dataset.free === '1'; // 且当时没有任何候选可选
       const cur = ctl.options.find(function (o) { return String(o.value) === String(currentValue()); });
       list.classList.add('hidden');
       input.dataset.kw = '';
-      // 自由输入：用户直接键入的文本与当前值不同 → 以输入文本作为自定义值
-      if (opts.allowFree && typedKw && typed && typed !== currentValue() &&
+      delete input.dataset.free;
+      // 自由输入：敲的是候选之外的名称才采纳为自定义值；只是搜索则保持原值
+      if (opts.allowFree && typedKw && wasFree && typed && typed !== currentValue() &&
         (!cur || typed !== (cur.label || cur.value))) {
         setValue(typed, typed);
         if (typeof opts.onPick === 'function') opts.onPick(typed, { value: typed, label: typed, free: true });
@@ -183,13 +192,15 @@
       if (items[i].scrollIntoView) items[i].scrollIntoView({ block: 'nearest' });
     }
 
-    input.addEventListener('focus', function () { open(); });
-    input.addEventListener('input', function () {
+    const onFocus = function () { open(); };
+
+    const onInput = function () {
       input.dataset.kw = input.value.trim();
       list.classList.remove('hidden');
       render(input.dataset.kw);
-    });
-    input.addEventListener('keydown', function (e) {
+    };
+
+    const onKeyDown = function (e) {
       if (e.key === 'ArrowDown') { e.preventDefault(); move(1); }
       else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
       else if (e.key === 'Enter') {
@@ -206,25 +217,52 @@
       } else if (e.key === 'Escape') {
         close();
       }
-    });
+    };
 
-    // 用 mousedown 抢先，避免输入框先 blur 导致列表收起
-    list.addEventListener('mousedown', function (e) {
+    const onListMouseDown = function (e) {
       const it = e.target.closest ? e.target.closest('.combo-item') : null;
       if (!it) return;
       e.preventDefault();
       pick(it.getAttribute('data-value'));
-    });
+    };
 
-    document.addEventListener('click', function (e) {
+    const onDocClick = function (e) {
       if (box.contains && box.contains(e.target)) return;
       if (list.classList.contains('hidden')) return;
       close();
-    });
+    };
+
+    input.addEventListener('focus', onFocus);
+    input.addEventListener('input', onInput);
+    input.addEventListener('keydown', onKeyDown);
+    // 用 mousedown 抢先，避免输入框先 blur 导致列表收起
+    list.addEventListener('mousedown', onListMouseDown);
+    document.addEventListener('click', onDocClick);
+
+    // 卸载：把监听器全部摘掉。同一节点重复 attach 时必须先卸载旧的，
+    // 否则 document 上的监听器会随打开次数线性堆积（表现为点外面时列表抖动、旧状态回写）
+    ctl.destroy = function () {
+      input.removeEventListener('focus', onFocus);
+      input.removeEventListener('input', onInput);
+      input.removeEventListener('keydown', onKeyDown);
+      list.removeEventListener('mousedown', onListMouseDown);
+      document.removeEventListener('click', onDocClick);
+      input.classList.remove('combo-input');
+    };
 
     registry.set(input, ctl);
     all.push(ctl);
     return ctl;
+  }
+
+  /** 卸载某个输入框上的组合框（内部使用：重复挂载前先清理旧实例） */
+  function detach(input) {
+    const ctl = registry.get(input);
+    if (!ctl) return;
+    ctl.destroy();
+    registry.delete(input);
+    const i = all.indexOf(ctl);
+    if (i >= 0) all.splice(i, 1);
   }
 
   /** 读取组合框的真实值（而非显示文本） */
@@ -235,14 +273,16 @@
     return (input.dataset && input.dataset.value) || input.value || '';
   }
 
-  /** 读取组合框的显示文本 */
-  function text(input) {
-    return input ? (input.value || '') : '';
-  }
-
   function refreshAll() {
-    all.forEach(function (c) { try { c.refresh(); } catch (e) { /* 忽略已卸载节点 */ } });
+    all.slice().forEach(function (c) { try { c.refresh(); } catch (e) { /* 忽略已卸载节点 */ } });
   }
 
-  window.Combo = { attach: attach, value: value, text: text, hl: hl, refreshAll: refreshAll, MAX_LIST: MAX_LIST };
+  window.Combo = {
+    attach: attach,
+    detach: detach,
+    value: value,
+    hl: hl,
+    refreshAll: refreshAll,
+    MAX_LIST: MAX_LIST,
+  };
 })();

@@ -1,4 +1,4 @@
-.PHONY: build run test vet fmt clean
+.PHONY: build run test test-web vet fmt clean
 
 BIN := apitoken
 ifeq ($(OS),Windows_NT)
@@ -11,8 +11,13 @@ build:
 run:
 	go run ./cmd/gateway -config config.yaml
 
+# 后端测试（无需 Node）
 test:
 	go test ./...
+
+# 前端交互回归测试（可选，需要 Node）
+test-web:
+	node tools/webui_test.js
 
 vet:
 	go vet ./...
