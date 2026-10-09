@@ -30,6 +30,121 @@
     $('key').value = localStorage.getItem('apitoken_key') || '';
   }
 
+  /* ===== 模型下拉（可搜索） ===== */
+  const MODEL_LIST_MAX = 300;   // 最多渲染多少行，避免模型极多时卡顿
+
+  function modelChannelText(m) {
+    return (m.upstreams || []).map(u => u.channel_id).join(', ');
+  }
+
+  /** 渲染模型列表；kw 为搜索关键词（模型名或渠道名模糊匹配） */
+  function renderModelList(kw) {
+    kw = (kw || '').trim().toLowerCase();
+    const all = state.models || [];
+    const hit = kw
+      ? all.filter(m => m.id.toLowerCase().includes(kw) || modelChannelText(m).toLowerCase().includes(kw))
+      : all;
+    const shown = hit.slice(0, MODEL_LIST_MAX);
+
+    if (!all.length) {
+      $('modelList').innerHTML = '<div class="combo-empty">网关未返回模型</div>';
+    } else if (!shown.length) {
+      $('modelList').innerHTML = '<div class="combo-empty">没有匹配「' + esc(kw) + '」的模型</div>';
+    } else {
+      const cur = $('model').value;
+      $('modelList').innerHTML = shown.map(m => {
+        const ups = modelChannelText(m);
+        return '<div class="combo-item' + (m.id === cur ? ' on' : '') + '" data-id="' + esc(m.id) + '">' +
+          '<span class="mid">' + hl(m.id, kw) + '</span>' +
+          (ups ? '<span class="mups" title="' + esc(ups) + '">' + esc(ups) + '</span>' : '') +
+          '</div>';
+      }).join('');
+    }
+    if (hit.length > shown.length) {
+      $('modelList').innerHTML += '<div class="combo-empty">仅显示前 ' + shown.length +
+        ' 个（共 ' + hit.length + ' 个命中），请继续输入以缩小范围</div>';
+    }
+
+    const hint = $('modelHint');
+    if (hint) {
+      hint.textContent = kw
+        ? '匹配 ' + hit.length + ' / ' + all.length + ' 个模型'
+        : (all.length ? '共 ' + all.length + ' 个模型，输入关键词可快速筛选' : '');
+    }
+  }
+
+  /** 关键词高亮 */
+  function hl(text, kw) {
+    if (!kw) return esc(text);
+    const i = text.toLowerCase().indexOf(kw);
+    if (i < 0) return esc(text);
+    return esc(text.slice(0, i)) + '<mark>' + esc(text.slice(i, i + kw.length)) + '</mark>' + esc(text.slice(i + kw.length));
+  }
+
+  function openModelList() {
+    $('modelList').classList.remove('hidden');
+    renderModelList($('model').dataset.kw || '');
+  }
+
+  function closeModelList() {
+    $('modelList').classList.add('hidden');
+    // 收起时把输入框还原为已选模型，避免残留搜索词
+    const m = (state.models || []).find(x => x.id === $('model').dataset.picked);
+    $('model').value = m ? m.id : '';
+  }
+
+  function pickModel(id) {
+    if (!id) return;
+    $('model').value = id;
+    $('model').dataset.picked = id;
+    $('model').dataset.kw = '';
+    $('title').textContent = id;
+    closeModelList();
+  }
+
+  function moveModelHighlight(step) {
+    const items = Array.from($('modelList').querySelectorAll('.combo-item'));
+    if (!items.length) return;
+    let i = items.findIndex(el => el.classList.contains('active'));
+    i = i < 0 ? (step > 0 ? 0 : items.length - 1) : Math.min(items.length - 1, Math.max(0, i + step));
+    items.forEach(el => el.classList.remove('active'));
+    items[i].classList.add('active');
+    items[i].scrollIntoView({ block: 'nearest' });
+  }
+
+  function initModelCombo() {
+    const inp = $('model'), list = $('modelList');
+    if (!inp || !list) return;
+
+    inp.dataset.picked = inp.value || '';
+    inp.addEventListener('focus', openModelList);
+    inp.addEventListener('input', function () {
+      inp.dataset.kw = inp.value.trim();
+      renderModelList(inp.dataset.kw);
+      list.classList.remove('hidden');
+    });
+    inp.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); moveModelHighlight(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); moveModelHighlight(-1); }
+      else if (e.key === 'Enter') {
+        const active = list.querySelector('.combo-item.active') || list.querySelector('.combo-item');
+        if (active && !list.classList.contains('hidden')) { e.preventDefault(); pickModel(active.dataset.id); }
+      } else if (e.key === 'Escape') {
+        closeModelList();
+      }
+    });
+
+    // 用 mousedown 而非 click，避免输入框先 blur 导致列表收起
+    list.addEventListener('mousedown', function (e) {
+      const it = e.target.closest('.combo-item');
+      if (!it) return;
+      e.preventDefault();
+      pickModel(it.dataset.id);
+    });
+    document.addEventListener('click', function (e) {
+      if (!$('modelBox').contains(e.target)) closeModelList();
+    });
+  }
   async function loadModels() {
     setStatus('wait', '连接中…');
     try {
@@ -40,10 +155,11 @@
         throw new Error(msg);
       }
       state.models = data.data || [];
-      $('model').innerHTML = state.models.map(m => {
-        const ups = (m.upstreams || []).map(u => u.channel_id).join(', ');
-        return '<option value="' + esc(m.id) + '">' + esc(m.id) + (ups ? '  ← ' + esc(ups) : '') + '</option>';
-      }).join('') || '<option value="">（网关未返回模型）</option>';
+      // 默认沿用当前选择；没有则选第一个
+      if (!state.models.some(m => m.id === $('model').value)) {
+        $('model').value = state.models.length ? state.models[0].id : '';
+      }
+      renderModelList('');
       setStatus('on', '已连接 · ' + state.models.length + ' 个模型');
       $('title').textContent = state.models.length ? $('model').value : '未获取到模型';
       toast('已拉取 ' + state.models.length + ' 个模型');
@@ -239,7 +355,7 @@
       send();
     }
   });
-  $('model').addEventListener('change', () => { $('title').textContent = $('model').value; });
+  initModelCombo();
 
   restore();
   setStatus('off', '未连接');
