@@ -118,13 +118,20 @@ func (b *LogBuffer) Clear() {
 
 // Filter 按条件过滤（最新在前）。
 func (b *LogBuffer) Filter(keep func(model.LogEntry) bool) []model.LogEntry {
-	all := b.Snapshot()
 	if keep == nil {
-		return all
+		return b.Snapshot()
 	}
-	out := make([]model.LogEntry, 0, len(all))
-	for _, e := range all {
-		if keep(e) {
+	// 单次遍历完成筛选：先 Snapshot 再过滤等于把整个缓冲复制两遍
+	// （keep_logs=800 时每次查询要多分配约 240KB）。
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	out := make([]model.LogEntry, 0, b.n)
+	for i := 0; i < b.n; i++ {
+		idx := b.head - 1 - i
+		for idx < 0 {
+			idx += len(b.buf)
+		}
+		if e := b.buf[idx]; keep(e) {
 			out = append(out, e)
 		}
 	}

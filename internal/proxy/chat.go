@@ -144,8 +144,9 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, in relayRequest)
 		res, uerr := h.attempt(w, r, reqID, cand, payload, stream, in.Resp, in.BuildOpts)
 		latency := time.Since(attStart)
 		if uerr == nil {
-			h.store.RecordChannelAttempt(cand.ID, true, latency, res.Usage.Prompt, res.Usage.Completion, "")
-			h.store.RecordRequest(modelName, true, time.Since(start), res.Usage.Prompt, res.Usage.Completion)
+			// 成功路径：渠道统计与请求级统计合并为一次加锁写入
+			h.store.RecordFinish(cand.ID, modelName, true, time.Since(start), latency,
+				res.Usage.Prompt, res.Usage.Completion, "")
 			entry.Error = ""
 			entry.Status = http.StatusOK
 			entry.ChannelID = cand.ID

@@ -285,6 +285,8 @@ routes:
 | `logging.file_dir` | `<data_dir>/logs` | 分段文件目录 |
 | `logging.file_max_mb` | `64` | 单个分段文件大小上限，超出滚动新文件 |
 | `logging.file_keep` | `7` | 保留的最近分段文件数，更早的自动删除 |
+| `upstream.max_idle_conns` | `200` | 上游连接池总空闲连接数 |
+| `upstream.max_idle_conns_per_host` | 空 | 单个上游的空闲连接上限；空 = 与总连接数相同。流式请求长时间独占连接时，数值偏小会导致连接反复新建 |
 | `upstream.default_timeout` | `120s` | 渠道未单独指定 `timeout_sec` 时的超时 |
 | `upstream.connect_timeout` | `10s` | 上游连接超时 |
 | `upstream.keep_alive` | `30s` | 上游连接池 keep-alive |
@@ -617,6 +619,8 @@ JSONL 正是它们最省事的输入格式。
 **几个关键设计**
 
 - **统计写入不阻塞转发**：`RecordRequest` / `RecordChannelAttempt` 走写锁，而 `Candidates` 只在读锁内做「候选快照」（拷贝渠道），把排序、加权展开、轮询全放在**锁外**完成，避免转发路径的计算把统计写入堵住。
+  成功路径进一步合并为 `RecordFinish` 一次加锁写入渠道维度 + 模型维度 + 全局维度，
+  不再是每个请求连抢两次全局写锁。
 - **访问日志写入完全异步**：请求路径只做一次非阻塞入队，落盘与内存写入都在后台协程（详见 10.4）。
   缓冲本身是真环形缓冲，`Add` 只覆写最旧的一个槽位，复杂度 O(1)。改造前每写一条日志都要
   `copy` 整个缓冲区（默认 `keep_logs: 1000`），单条日志约 280 字节，相当于每个请求额外搬移
@@ -626,6 +630,19 @@ JSONL 正是它们最省事的输入格式。
   | --- | --- |
   | 改造前（整段搬移） | ~4648 ns |
   | 改造后（环形覆写） | ~136 ns |
+
+- **日志摘要截断不转 `[]rune`**：保存请求/响应摘要时按**字符**截断。改造前 `[]rune(s)` 会把整个
+  响应体按 4 字节/字符复制一遍（`payload_limit=8000` 时一次约 32KB，且每个请求调用 2 次）。
+  现改为 `utf8.RuneCountInString`（只统计不分配）+ 扫描到第 n 个字符的字节边界后直接切片。
+  实测（中文长回复，`-benchtime=3000x`）：
+
+  | 场景 | 改造前 | 改造后 |
+  | --- | --- | --- |
+  | 不需截断 | ~40.3 µs / 24.6 KB | ~17.9 µs / **0 分配** |
+  | 需要截断 | ~130.2 µs / 98.4 KB | ~71.4 µs / 24.7 KB |
+
+- **连接池按上游粒度可配**：`MaxIdleConnsPerHost` 之前是 `MaxIdleConns / 2` 的静态折半，
+  渠道少时白白限制并发，渠道多时又不够用。现在独立配置，留空 = 与总连接数相同。
 
 - **随机策略用 `math/rand/v2`**：包级函数不加全局锁，避免所有并发请求在随机源上排队。
 - **日志关键词搜索不拼串**：逐字段匹配，避免对每条日志 `strings.Join` + 两次 `ToLower` 造成的临时分配。
@@ -734,7 +751,7 @@ flowchart TD
     R -->|"非流式"| T["ParseUsage → snippet → JSON<br/>OpenAI 原样透传 / Anthropic 转 translate.ResponseToAnthropic"]
     S --> U["成功收尾"]
     T --> U
-    U --> U1["RecordChannelAttempt + RecordRequest<br/>AddLog → 非阻塞入队，后台批量写内存缓冲 + JSONL 文件"]
+    U --> U1["RecordFinish（渠道 + 模型 + 全局统计，一次加锁）<br/>AddLog → 非阻塞入队，后台批量写内存缓冲 + JSONL 文件"]
 
     Q -->|"429 / 5xx / 超时，且命中 RetryStatus"| V{"还有候选？"}
     V -->|"是"| L

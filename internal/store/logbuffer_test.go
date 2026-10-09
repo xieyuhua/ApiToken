@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/demo1/apitoken/internal/config"
 	"github.com/demo1/apitoken/internal/model"
 )
 
@@ -234,6 +235,102 @@ func TestMatchKeyword(t *testing.T) {
 		if got := Match(e, q); got != c.want {
 			t.Fatalf("关键词 %q：期望 %v，实际 %v", c.kw, c.want, got)
 		}
+	}
+}
+
+// TestFilterSinglePass 校验 Filter 与 Snapshot + 手工过滤结果一致。
+func TestFilterSinglePass(t *testing.T) {
+	b := NewLogBuffer(10)
+	for i := 1; i <= 6; i++ {
+		b.Add(entry(i))
+	}
+	only := func(e model.LogEntry) bool { return e.Status == 200 }
+
+	got := b.Filter(only)
+	want := b.Snapshot()
+	var expect []model.LogEntry
+	for _, e := range want {
+		if only(e) {
+			expect = append(expect, e)
+		}
+	}
+	if len(got) != len(expect) {
+		t.Fatalf("Filter 返回 %d 条，期望 %d", len(got), len(expect))
+	}
+	for i := range got {
+		if got[i].RequestID != expect[i].RequestID {
+			t.Fatalf("第 %d 条不匹配: %s vs %s", i, got[i].RequestID, expect[i].RequestID)
+		}
+	}
+	// keep 为 nil 时等价于全量快照
+	all := b.Filter(nil)
+	if len(all) != 6 {
+		t.Fatalf("Filter(nil) 应返回 6 条，实际 %d", len(all))
+	}
+	if all[0].RequestID != "req-006" {
+		t.Fatalf("最新一条应在最前，实际 %s", all[0].RequestID)
+	}
+}
+
+// TestRecordFinishMergesStats 校验合并写入与分开写入的统计结果一致。
+func TestRecordFinishMergesStats(t *testing.T) {
+	build := func() *Store {
+		return &Store{
+			cfg:      &config.Config{}, // RecordFinish 只用锁，不读配置
+			channels: map[string]*model.Channel{"c1": {ID: "c1", Name: "渠道"}},
+			health:   map[string]HealthInfo{},
+			usage:    map[string]*model.ModelUsage{},
+			logs:     NewLogBuffer(10),
+		}
+	}
+
+	// 合并写入：成功
+	s1 := build()
+	s1.RecordFinish("c1", "m1", true, 200*time.Millisecond, 100*time.Millisecond, 10, 20, "")
+
+	// 分开写入：成功（改造前的调用方式）
+	s2 := build()
+	s2.RecordChannelAttempt("c1", true, 100*time.Millisecond, 10, 20, "")
+	s2.RecordRequest("m1", true, 200*time.Millisecond, 10, 20)
+
+	for _, s := range []*Store{s1, s2} {
+		ch := s.channels["c1"]
+		if ch.Stats.Requests != 1 || ch.Stats.Success != 1 || ch.Stats.Failed != 0 {
+			t.Fatalf("渠道统计不符: %+v", ch.Stats)
+		}
+		if ch.Stats.TotalLatencyMS != 100 {
+			t.Fatalf("渠道延迟应取单次尝试的 100ms，实际 %d", ch.Stats.TotalLatencyMS)
+		}
+		if ch.Stats.PromptTokens != 10 || ch.Stats.CompletionTokens != 20 {
+			t.Fatalf("渠道 token 统计不符: %+v", ch.Stats)
+		}
+		if s.totals.Requests != 1 || s.totals.Success != 1 {
+			t.Fatalf("全局统计不符: %+v", s.totals)
+		}
+		if s.totals.TotalLatencyMS != 200 {
+			t.Fatalf("全局延迟应取请求总耗时 200ms，实际 %d", s.totals.TotalLatencyMS)
+		}
+		u := s.usage["m1"]
+		if u == nil || u.Requests != 1 || u.PromptTokens != 10 {
+			t.Fatalf("模型统计不符: %+v", u)
+		}
+	}
+
+	// 合并写入：失败并带错误信息
+	s3 := build()
+	s3.RecordFinish("c1", "m1", false, 300*time.Millisecond, 300*time.Millisecond, 0, 0, "boom")
+	ch := s3.channels["c1"]
+	if ch.Stats.Failed != 1 || ch.Stats.LastError != "boom" {
+		t.Fatalf("失败统计不符: %+v", ch.Stats)
+	}
+	if s3.totals.Failed != 1 || s3.totals.Success != 0 {
+		t.Fatalf("全局失败统计不符: %+v", s3.totals)
+	}
+	// 渠道不存在时不应 panic，且请求级统计仍要写入
+	s4 := build()
+	s4.RecordFinish("nope", "m1", true, 10*time.Millisecond, 10*time.Millisecond, 1, 1, "")
+	if s4.totals.Requests != 1 {
+		t.Fatalf("渠道不存在时请求级统计仍应写入: %+v", s4.totals)
 	}
 }
 

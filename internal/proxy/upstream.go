@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/demo1/apitoken/internal/config"
 	"github.com/demo1/apitoken/internal/model"
@@ -23,15 +24,24 @@ type Client struct {
 	cfg  *config.Config
 }
 
-// NewClient 构造上游客户端。
+// NewClient 构造上游客户端.
 func NewClient(cfg *config.Config) *Client {
+	// PerHost 决定单个上游能同时保持多少个空闲连接。它比总连接数更关键：
+	// HTTP/1.1 下一个连接同一时刻只服务一个请求，流式响应还会长时间独占连接，
+	// 数值偏小会导致连接被反复新建，每次都要重走 TCP 握手 + TLS 握手。
+	// 留空时退化为与 MaxIdleConns 相同（渠道少时不做无谓折半）。
+	perHost := cfg.Upstream.MaxIdleConnsPerHost
+	if perHost <= 0 {
+		perHost = cfg.Upstream.MaxIdleConns
+	}
+	dialer := &net.Dialer{
+		Timeout:   cfg.Upstream.ConnectTimeout.D(),
+		KeepAlive: cfg.Upstream.KeepAlive.D(),
+	}
 	transport := &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   cfg.Upstream.ConnectTimeout.D(),
-			KeepAlive: cfg.Upstream.KeepAlive.D(),
-		}).DialContext,
+		DialContext:           dialer.DialContext,
 		MaxIdleConns:          cfg.Upstream.MaxIdleConns,
-		MaxIdleConnsPerHost:   cfg.Upstream.MaxIdleConns / 2,
+		MaxIdleConnsPerHost:   perHost,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   15 * time.Second,
 		ExpectContinueTimeout: time.Second,
@@ -311,11 +321,19 @@ func truncateFull(s string, n int) (string, int) {
 	if n <= 0 {
 		return s, 0
 	}
-	rs := []rune(s)
-	if len(rs) <= n {
+	// 不做 []rune(s) 转换：那样会把整个响应体按 4 字节/字符复制一遍
+	//（payload_limit=8000 时一次就是 32KB），而这里只需要保留前 n 个字符。
+	// RuneCountInString 只统计不分配，再扫描到第 n 个字符的字节边界即可切片。
+	total := utf8.RuneCountInString(s)
+	if total <= n {
 		return s, 0
 	}
-	return string(rs[:n]) + fmt.Sprintf("... [已截断，原始 %d 字]", len(rs)), len(rs)
+	cut := 0
+	for i := 0; i < n; i++ {
+		_, size := utf8.DecodeRuneInString(s[cut:])
+		cut += size
+	}
+	return s[:cut] + fmt.Sprintf("... [已截断，原始 %d 字]", total), total
 }
 
 // NewRequestID 生成请求 ID。

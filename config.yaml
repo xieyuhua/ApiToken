@@ -39,6 +39,9 @@ logging:
   file_max_mb: 64              # 单个分段文件大小上限，超过则滚动新文件
   file_keep: 7                 # 保留的最近分段文件数
 upstream:
+  # 单个上游的空闲连接上限；留空 = 与 max_idle_conns 相同。
+  # 流式请求会长时间独占连接，该值偏小会导致连接反复新建（TCP + TLS 握手开销）。
+  # max_idle_conns_per_host: 200
   default_timeout: 2m0s
   connect_timeout: 10s
   keep_alive: 30s

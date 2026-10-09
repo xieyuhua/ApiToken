@@ -156,7 +156,10 @@ type UpstreamConfig struct {
 	ConnectTimeout Duration `yaml:"connect_timeout"`
 	KeepAlive      Duration `yaml:"keep_alive"`
 	MaxIdleConns   int      `yaml:"max_idle_conns"`
-	ProxyURL       string   `yaml:"proxy_url"`
+	// MaxIdleConnsPerHost 单个上游的空闲连接上限；<=0 时等于 MaxIdleConns。
+	// 流式请求会长时间独占连接，该值偏小会导致连接反复新建（TCP + TLS 握手开销）。
+	MaxIdleConnsPerHost int    `yaml:"max_idle_conns_per_host"`
+	ProxyURL            string `yaml:"proxy_url"`
 }
 
 // RT 返回当前生效的运行时配置（并发安全）。

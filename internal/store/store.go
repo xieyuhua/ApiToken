@@ -566,6 +566,56 @@ func (s *Store) RecordChannelAttempt(channelID string, ok bool, latency time.Dur
 	}
 }
 
+// RecordFinish 一次性记录一次请求的最终结果与该次尝试的渠道统计。
+//
+// 合并 RecordChannelAttempt + RecordRequest 的原因：两者都写同一把 Store.mu，
+// 分开调用会让每个请求（故障转移时是每次尝试）都连续抢两次全局写锁，
+// 高并发下这把锁就是瓶颈；而两次统计本就在同一请求内完成，合并不改变语义。
+func (s *Store) RecordFinish(channelID, modelName string, ok bool, total, attempt time.Duration, prompt, completion int64, errMsg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+
+	// 渠道维度
+	if ch, exists := s.channels[channelID]; exists {
+		ch.Stats.Requests++
+		ch.Stats.TotalLatencyMS += attempt.Milliseconds()
+		ch.Stats.LastUsed = now
+		if ok {
+			ch.Stats.Success++
+			ch.Stats.PromptTokens += prompt
+			ch.Stats.CompletionTokens += completion
+		} else {
+			ch.Stats.Failed++
+			if errMsg != "" {
+				ch.Stats.LastError = errMsg
+			}
+		}
+	}
+
+	// 模型 + 全局维度
+	u := s.usage[modelName]
+	if u == nil {
+		u = &model.ModelUsage{}
+		s.usage[modelName] = u
+	}
+	u.Requests++
+	u.TotalLatencyMS += total.Milliseconds()
+	s.totals.Requests++
+	s.totals.TotalLatencyMS += total.Milliseconds()
+	if ok {
+		u.Success++
+		u.PromptTokens += prompt
+		u.CompletionTokens += completion
+		s.totals.Success++
+		s.totals.PromptTokens += prompt
+		s.totals.CompletionTokens += completion
+	} else {
+		u.Failed++
+		s.totals.Failed++
+	}
+}
+
 // RecordRequest 记录一次客户端请求（最终结果）。
 func (s *Store) RecordRequest(name string, ok bool, latency time.Duration, prompt, completion int64) {
 	s.mu.Lock()
