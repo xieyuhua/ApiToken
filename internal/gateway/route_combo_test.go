@@ -59,6 +59,53 @@ func TestRouteDialogSearchableCombos(t *testing.T) {
 	}
 }
 
+// TestRouteModelNameFreeInput 校验「对外模型名」可以直接自由输入：
+// 该字段本就是客户端自定义的名字，不能强制从模型列表里选；
+// 旧的「其他…（自定义名称）」选项排在列表末尾，会被 MAX_LIST 截断后根本点不到。
+func TestRouteModelNameFreeInput(t *testing.T) {
+	h := newTestGateway(t, nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	// 旧的占位方案必须彻底移除
+	for _, gone := range []string{"__custom__", "r_model_custom", "其他…"} {
+		if strings.Contains(body, gone) {
+			t.Fatalf("仍残留 %q：会因渲染上限而不可选，且不是真正的自由输入", gone)
+		}
+	}
+	// 同一个输入框既可搜索也可自由输入
+	if !strings.Contains(body, `id="r_model"`) {
+		t.Fatal("缺少对外模型名输入框")
+	}
+	seg := body[strings.Index(body, "function mountRouteCombos()"):]
+	seg = seg[:strings.Index(seg, "// ② 添加渠道")]
+	if !strings.Contains(seg, "allowFree: true") {
+		t.Fatal("对外模型名下拉未开启 allowFree，无法输入候选之外的名称")
+	}
+	if !strings.Contains(body, "function routeModelValue()") ||
+		!strings.Contains(body, "Combo.value($('r_model'))") {
+		t.Fatal("routeModelValue 应直接取输入框的值")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/static/combo.js", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	js := rec.Body.String()
+	for _, want := range []string{
+		"opts.allowFree", "使用自定义名称", "freeHint", "free: true",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("combo.js 缺少自由输入能力 %q", want)
+		}
+	}
+	// 自由输入项必须置顶渲染，否则同样会被 MAX_LIST 截断
+	if strings.Index(js, "const rows = free ? [free].concat(hit) : hit;") < 0 {
+		t.Fatal("自由输入项应与命中项合并后置顶渲染")
+	}
+}
+
 // TestModelPickListSearchable 校验「拉取模型」的勾选列表也可搜索：
 // 上游可达 469 个模型，逐条勾选不现实；全选还必须只作用于当前过滤结果。
 func TestModelPickListSearchable(t *testing.T) {
