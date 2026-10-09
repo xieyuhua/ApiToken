@@ -150,16 +150,33 @@ pre.log[data-collapsed="0"]{max-height:none;overflow:visible}
 .combo{position:relative}
 .combo-list{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:40;
   background:var(--panel);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);
-  max-height:290px;overflow:auto;padding:4px}
+  max-height:320px;overflow:auto;padding:4px}
+/* 列表可窄于输入框由 min-width 决定，但不超过视口宽度 */
+@media (min-width:640px){.combo-list{min-width:100%;width:max-content;max-width:min(460px,60vw)}}
 .combo-list.hidden{display:none}
-.combo-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:12.5px}
+.combo-item{display:block;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:12.5px}
 .combo-item:hover,.combo-item.active{background:var(--primary);color:var(--on-primary)}
 .combo-item:hover .mups,.combo-item.active .mups{color:inherit;opacity:.85}
 .combo-item.on{background:var(--panel2)}
 .combo-item.on .mid{color:var(--primary);font-weight:600}
 .combo-item:hover.on,.combo-item.active.on{background:var(--primary);color:var(--on-primary)}
-.combo-item .mid{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,Consolas,monospace}
+.combo-item .mid{display:block;font-family:ui-monospace,Consolas,monospace;line-height:1.45;
+  white-space:normal;overflow-wrap:anywhere;word-break:break-word}
 .combo-item .mid mark{background:transparent;color:var(--primary);font-weight:700;text-decoration:underline}
 .combo-item:hover .mid mark,.combo-item.active .mid mark{color:inherit}
-.combo-item .mups{max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:11px}
+.combo-item .mups{display:block;margin-top:2px;color:var(--muted);font-size:11px;
+  white-space:normal;overflow-wrap:anywhere}
+.combo-item .mups::before{content:"渠道 "}
 .combo-empty{padding:8px 10px;font-size:12px;color:var(--muted);text-align:center}
+/* 可搜索下拉：补充（分组标题 / 输入框 / 动态行内） */
+.combo-input{cursor:pointer}
+.combo-group{padding:6px 8px 3px;font-size:11px;color:var(--muted);
+  border-top:1px solid var(--border);margin-top:3px}
+.combo-group:first-child{border-top:0;margin-top:0}
+.combo-item.active .mid,.combo-item.active .mups{color:inherit}
+/* 拉取模型：可搜索的勾选列表 */
+.mchk-row{display:flex;gap:8px;align-items:flex-start;padding:5px 6px;
+  border-bottom:1px solid var(--border);font-size:13px;cursor:pointer}
+.mchk-row:hover{background:var(--panel2)}
+.mchk-row .mono{word-break:break-all;line-height:1.45}
+.mchk-row mark{background:transparent;color:var(--primary);font-weight:700}

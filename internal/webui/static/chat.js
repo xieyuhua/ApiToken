@@ -54,7 +54,7 @@
       const cur = $('model').value;
       $('modelList').innerHTML = shown.map(m => {
         const ups = modelChannelText(m);
-        return '<div class="combo-item' + (m.id === cur ? ' on' : '') + '" data-id="' + esc(m.id) + '">' +
+        return '<div class="combo-item' + (m.id === cur ? ' on' : '') + '" data-id="' + esc(m.id) + '" title="' + esc(m.id) + '">' +
           '<span class="mid">' + hl(m.id, kw) + '</span>' +
           (ups ? '<span class="mups" title="' + esc(ups) + '">' + esc(ups) + '</span>' : '') +
           '</div>';
@@ -95,9 +95,11 @@
 
   function pickModel(id) {
     if (!id) return;
-    $('model').value = id;
-    $('model').dataset.picked = id;
-    $('model').dataset.kw = '';
+    const inp = $('model');
+    inp.value = id;
+    inp.dataset.picked = id;
+    inp.dataset.kw = '';
+    inp.title = id;              // 名称较长时，悬停输入框可看完整模型名
     $('title').textContent = id;
     closeModelList();
   }
