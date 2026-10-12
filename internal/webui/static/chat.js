@@ -8,6 +8,24 @@
     if (!b) b = location.origin;
     return b;
   }
+  /** 地址里已含 completions 视为「对话全路径」，直接使用、不再拼接 */
+  function isChatFullPath(b) {
+    return b.indexOf('completions') !== -1;
+  }
+  /** 拼接 OpenAI 兼容路径：base 已带 /v1 时不重复加 */
+  function apiUrl(suffix) {
+    const s = '/' + suffix.replace(/^\/+/, '');
+    return /\/v\d+$/i.test(base()) ? base() + s : base() + '/v1' + s;
+  }
+  /** 拉模型用：全路径时剥掉尾部 /chat/completions（兼容 /completions）再拼 models */
+  function modelsUrl() {
+    if (!isChatFullPath(base())) return apiUrl('/models');
+    return base().replace(/\/(chat\/)?completions$/i, '') + '/models';
+  }
+  function chatUrl() {
+    const b = base();
+    return isChatFullPath(b) ? b : b + '/v1/chat/completions';
+  }
   function key() { return ($('key').value || '').trim(); }
   function headers(extra) {
     const h = Object.assign({ 'Content-Type': 'application/json' }, extra || {});
@@ -75,7 +93,7 @@
   async function loadModels() {
     setStatus('wait', '连接中…');
     try {
-      const res = await fetch(base() + '/v1/models', { headers: headers() });
+      const res = await fetch(modelsUrl(), { headers: headers() });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
         const msg = (data && data.error && data.error.message) || ('HTTP ' + res.status);
@@ -193,7 +211,7 @@
     state.controller = new AbortController();
 
     try {
-      const res = await fetch(base() + '/v1/chat/completions', {
+      const res = await fetch(chatUrl(), {
         method: 'POST',
         headers: headers(),
         body: JSON.stringify(body),

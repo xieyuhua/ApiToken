@@ -362,6 +362,17 @@ Key 无效或未生效。DeepSeek、商汤、腾讯 WorkBuddy 的 Key 各自独�
 因此可以直接用它来判断「网关是否可用」。响应头 `X-Gateway-Channel`、`X-Gateway-Upstream-Model`、
 `X-Request-Id` 在成功与失败时都会返回，便于排查路由命中情况。
 
+**网关地址的填法**（三种都支持，页面自动判断）：
+
+| 填写的地址 | 对话请求 | 拉取模型请求 |
+| --- | --- | --- |
+| `http://127.0.0.1:8080` | `http://127.0.0.1:8080/v1/chat/completions` | `http://127.0.0.1:8080/v1/models` |
+| `http://127.0.0.1:8080/v1` | 同上 | 同上 |
+| `http://127.0.0.1:8080/v1/chat/completions` | 原样使用（**含 completions 即视为全路径，不再拼接**） | `http://127.0.0.1:8080/v1/models`（自动剥掉尾部 `/chat/completions`） |
+
+即：地址里只要包含 `completions`，就按「对话全路径」处理，发消息时直接使用你填的地址；
+「拉取模型」则会在该地址末尾去掉 `chat/completions` 后请求 `/models`。地址已带 `/v1` 时不会重复拼出 `/v1/v1`。
+
 ### 9.3 测试（自检）
 
 访问 http://127.0.0.1:8080/diagnostics，点「开始体检」：
