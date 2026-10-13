@@ -90,6 +90,11 @@
         <input id="maxAttempts" type="number" min="1" max="10" />
         <p class="hint">单个请求最多尝试几个渠道，1 表示不故障转移</p>
       </div>
+      <div>
+        <label>渠道失败冷却（秒，cooldown）</label>
+        <input id="cooldown" type="number" min="0" max="3600" step="10" />
+        <p class="hint">渠道调用失败后，冷却期内不再尝试该渠道（避免下一轮会话又第一个打到它）；0 = 关闭</p>
+      </div>
       <div style="grid-column:1/-1">
         <label>触发重试（切换下一个渠道）的状态码</label>
         <div class="row" id="retryBox"></div>
@@ -202,6 +207,7 @@ async function load() {
     $('adminToken').placeholder = d.admin_token_set ? '留空表示不修改' : '未设置';
     $('strategy').value = s.strategy;
     $('maxAttempts').value = s.max_attempts;
+  $('cooldown').value = s.cooldown_seconds;
     $('forceStreamUsage').value = String(s.force_stream_usage);
     renderRetryBoxes(s.retry_status || []);
     $('accessLog').value = String(s.access_log);
@@ -290,6 +296,7 @@ async function save() {
     admin_token: $('adminToken').value.trim(),
     strategy: $('strategy').value,
     max_attempts: +$('maxAttempts').value,
+    cooldown_seconds: +$('cooldown').value,
     force_stream_usage: $('forceStreamUsage').value === 'true',
     retry_status: Array.from(document.querySelectorAll('.rchk:checked')).map(el => +el.value),
     access_log: $('accessLog').value === 'true',

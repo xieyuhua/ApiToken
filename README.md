@@ -210,6 +210,8 @@ routes:
 
 **重试规则**：`routing.max_attempts` 限制单请求最多尝试的渠道数；仅当错误码命中 `routing.retry_status`（默认 408/409/425/429/5xx）或发生网络错误时才切换渠道，4xx（如 401 Key 失效）直接返回，避免无谓重试。流式请求在**尚未下发响应头之前**也可以安全切换渠道。
 
+**失败冷却（`routing.cooldown`，默认 `60s`）**：渠道调用失败后，该渠道在冷却时长内不再进入候选列表（显式路由同样生效，仍保持你声明的顺序），避免「第一个渠道刚失败，下一轮会话又第一个打到它」再浪费一次超时。渠道一旦成功立即解除冷却；全部渠道都在冷却时退化为全量候选，不会把请求直接判死。管理端渠道列表会显示剩余冷却时间；设为 `0s` 关闭冷却（恢复旧行为）。该值在设置页可热更新。
+
 渠道还支持：
 
 - `auth_style`：`bearer`（默认）/ `header`（key 放进自定义头）/ `query`（`?key=`），配合 `auth_header` 使用
@@ -275,6 +277,7 @@ routes:
 | `routing.strategy` | `priority_round_robin` | 路由策略，见第 5 节（热更新） |
 | `routing.max_attempts` | `3` | 单请求最多尝试的渠道数（热更新） |
 | `routing.retry_status` | `[408,409,425,429,500,502,503,504,529]` | 命中这些状态码才切换渠道（热更新） |
+| `routing.cooldown` | `60s` | 渠道失败后的冷却时长，冷却期内不再尝试该渠道；`0s` 关闭（热更新） |
 | `routing.force_stream_usage` | `false` | 开启后自动注入 `stream_options` 统计流式 token（热更新）。<br/>`/v1/messages` 无论该开关如何都会开启（Anthropic 靠末尾数据块取用量） |
 | `logging.level` | `info` | 日志级别 |
 | `logging.access_log` | — | 是否打访问日志（热更新） |

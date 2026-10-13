@@ -29,6 +29,9 @@ type Store struct {
 	routes   []model.Route
 
 	health map[string]HealthInfo
+	// cooldownUntil 渠道失败后的冷却截止时间；冷却期内不进候选列表。
+	// 只由 Store.mu 保护，读写都在持锁路径上完成。
+	cooldownUntil map[string]time.Time
 
 	usage  map[string]*model.ModelUsage
 	totals model.ModelUsage
@@ -63,11 +66,12 @@ func New(cfg *config.Config, log *slog.Logger) (*Store, error) {
 		cfg:      cfg,
 		log:      log,
 		dataFile: cfg.DataFile(),
-		channels: map[string]*model.Channel{},
-		health:   map[string]HealthInfo{},
-		usage:    map[string]*model.ModelUsage{},
-		logs:     NewLogBuffer(cfg.RT().KeepLogs),
-		started:  time.Now(),
+		channels:      map[string]*model.Channel{},
+		health:        map[string]HealthInfo{},
+		usage:         map[string]*model.ModelUsage{},
+		cooldownUntil: map[string]time.Time{},
+		logs:          NewLogBuffer(cfg.RT().KeepLogs),
+		started:       time.Now(),
 	}
 	// 启动日志落盘管道；若配置为纯内存模式，此处返回 nil 并退化为直接入缓冲
 	s.sink = newLogSink(cfg, s.logs, log)
@@ -237,6 +241,7 @@ func (s *Store) DeleteChannel(id string) error {
 	}
 	delete(s.channels, id)
 	delete(s.health, id)
+	delete(s.cooldownUntil, id)
 	for i, cid := range s.order {
 		if cid == id {
 			s.order = append(s.order[:i], s.order[i+1:]...)
@@ -302,13 +307,66 @@ func (s *Store) DeleteRoute(modelName string) error {
 // Candidates 计算某个对外模型名的候选渠道列表（已按策略排序）。
 func (s *Store) Candidates(name string) []model.Candidate {
 	list, fixed := s.candidateSnapshot(name)
-	if list == nil || fixed {
+	if list == nil {
 		return list
+	}
+	// 冷却过滤放在排序前：把刚失败的渠道剔出候选，让请求直接从下一个健康渠道开始
+	// （显式路由同样过滤，仍保持用户声明的相对顺序）。
+	// 若过滤后一个不剩（所有渠道都在冷却），则退化为原列表，避免直接把请求判死。
+	filtered := s.filterCooldown(list)
+	if len(filtered) == 0 {
+		filtered = list
+	}
+	if fixed {
+		return filtered
 	}
 	// 排序、加权展开与轮询游标都放到锁外执行：它们只依赖已拷出的快照数据。
 	// 这些计算包含建 map、排序与按权重展开（最多 20 倍），放在读锁内会阻塞
 	// RecordRequest / RecordChannelAttempt 的统计写入，抬高整体并发延迟。
-	return s.orderCandidates(name, list)
+	return s.orderCandidates(name, filtered)
+}
+
+// filterCooldown 剔除处于失败冷却期内的渠道。必须在锁外调用。
+func (s *Store) filterCooldown(in []model.Candidate) []model.Candidate {
+	if s.cooldownSetting() <= 0 {
+		return in
+	}
+	s.mu.RLock()
+	now := time.Now()
+	out := make([]model.Candidate, 0, len(in))
+	for _, c := range in {
+		until, ok := s.cooldownUntil[c.ID]
+		if ok && now.Before(until) {
+			continue
+		}
+		out = append(out, c)
+	}
+	s.mu.RUnlock()
+	return out
+}
+
+// cooldownRemaining 渠道剩余冷却时长（<=0 表示可用）。
+func (s *Store) cooldownRemaining(id string) time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return time.Until(s.cooldownUntil[id])
+}
+
+// cooldownSetting 当前生效的冷却时长（配置缺失时按关闭处理）。
+func (s *Store) cooldownSetting() time.Duration {
+	if s.cfg == nil {
+		return 0
+	}
+	return s.cfg.RT().Cooldown
+}
+
+// markCooldown 记录渠道冷却截止时间。调用方需持有 s.mu；
+// map 懒初始化以兼容直接构造的 Store（如测试）。
+func (s *Store) markCooldown(id string, until time.Time) {
+	if s.cooldownUntil == nil {
+		s.cooldownUntil = map[string]time.Time{}
+	}
+	s.cooldownUntil[id] = until
 }
 
 // candidateSnapshot 在读锁内取出候选快照。
@@ -564,6 +622,13 @@ func (s *Store) RecordChannelAttempt(channelID string, ok bool, latency time.Dur
 			ch.Stats.LastError = errMsg
 		}
 	}
+	// 失败进入冷却：该渠道在冷却时长内不再进入候选列表，
+	// 避免「刚失败，下一轮会话又第一个打到它」。
+	if ok {
+		delete(s.cooldownUntil, channelID)
+	} else if cd := s.cooldownSetting(); cd > 0 {
+		s.markCooldown(channelID, time.Now().Add(cd))
+	}
 }
 
 // RecordFinish 一次性记录一次请求的最终结果与该次尝试的渠道统计。
@@ -591,6 +656,12 @@ func (s *Store) RecordFinish(channelID, modelName string, ok bool, total, attemp
 				ch.Stats.LastError = errMsg
 			}
 		}
+	}
+	// 成功即解除冷却（手动测试/连通性通过同样走这里时同理）
+	if ok {
+		delete(s.cooldownUntil, channelID)
+	} else if cd := s.cooldownSetting(); cd > 0 {
+		s.markCooldown(channelID, now.Add(cd))
 	}
 
 	// 模型 + 全局维度
@@ -676,11 +747,16 @@ func (s *Store) Snapshot() model.Snapshot {
 		}
 		h := s.health[id]
 		status := h.Status // 空表示尚未做过连通性测试
+		var cdMS int64
+		if rem := time.Until(s.cooldownUntil[id]); rem > 0 {
+			cdMS = rem.Milliseconds()
+		}
 		snap.Channels = append(snap.Channels, model.ChannelStat{
 			ID: ch.ID, Name: ch.Name, BaseURL: ch.BaseURL,
 			Enabled: ch.Enabled, Weight: ch.Weight, Priority: ch.Priority, Models: ch.Models,
 			MaskedKey: model.MaskSecret(ch.APIKey), Health: status, LastCheckedAt: h.CheckedAt,
-			LastError: firstNonEmpty(ch.Stats.LastError, h.Error), LastUsed: ch.Stats.LastUsed, Stats: ch.Stats,
+			LastError: firstNonEmpty(ch.Stats.LastError, h.Error), LastUsed: ch.Stats.LastUsed,
+			CooldownRemainingMS: cdMS, Stats: ch.Stats,
 		})
 	}
 	return snap

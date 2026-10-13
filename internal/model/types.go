@@ -244,5 +244,7 @@ type ChannelStat struct {
 	LastCheckedAt time.Time `json:"last_checked_at,omitempty"`
 	LastError     string    `json:"last_error,omitempty"`
 	LastUsed      time.Time `json:"last_used,omitempty"`
-	Stats         Stats     `json:"stats"`
+	// CooldownRemainingMS 失败冷却剩余毫秒数；>0 表示该渠道暂时不参与候选
+	CooldownRemainingMS int64 `json:"cooldown_remaining_ms,omitempty"`
+	Stats               Stats `json:"stats"`
 }

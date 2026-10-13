@@ -20,6 +20,8 @@ type SettingsView struct {
 	MaxAttempts      int    `json:"max_attempts"`
 	ForceStreamUsage *bool  `json:"force_stream_usage"`
 	RetryStatus      []int  `json:"retry_status"`
+	// CooldownSeconds 渠道失败后的冷却秒数；0 = 关闭冷却。nil = 不修改
+	CooldownSeconds *int `json:"cooldown_seconds"`
 
 	// 日志
 	AccessLog     *bool  `json:"access_log"`
@@ -51,6 +53,7 @@ type SettingsMeta struct {
 }
 
 func viewFromRuntime(rt *config.Runtime, level string) SettingsView {
+	cd := int(rt.Cooldown / time.Second)
 	return SettingsView{
 		ClientKeys:       append([]string(nil), rt.ClientKeys...),
 		AdminToken:       rt.AdminToken,
@@ -58,6 +61,7 @@ func viewFromRuntime(rt *config.Runtime, level string) SettingsView {
 		MaxAttempts:      rt.MaxAttempts,
 		ForceStreamUsage: boolPtr(rt.ForceStreamUsage),
 		RetryStatus:      append([]int(nil), rt.RetryStatus...),
+		CooldownSeconds:  &cd,
 		AccessLog:        boolPtr(rt.AccessLog),
 		KeepLogs:         rt.KeepLogs,
 		RecordPayload:    boolPtr(rt.RecordPayload),
@@ -95,7 +99,7 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 			ConfigFile: h.cfg.Path(), DataFile: h.cfg.DataFile(), Addr: h.cfg.Server.Addr,
 			Version: model.Version, Uptime: h.store.Uptime().String(),
 			RestartNeeded: []string{"监听地址 addr", "数据目录 data_dir", "单次请求体积上限 max_body_mb", "上游连接池参数"},
-			HotFields:     []string{"网关密钥 / 管理令牌", "路由策略与重试", "日志设置", "请求超时", "出网代理"},
+			HotFields:     []string{"网关密钥 / 管理令牌", "路由策略与重试", "渠道失败冷却", "日志设置", "请求超时", "出网代理"},
 		},
 		"admin_token_set": rt.AdminToken != "",
 		"revealed":        revealed,
@@ -157,6 +161,19 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	if len(in.RetryStatus) > 0 {
 		next.RetryStatus = in.RetryStatus
 	}
+	// 冷却：仅当提交了该字段才改（旧客户端不提交时保持现状）。
+	if in.CooldownSeconds != nil {
+		cd := *in.CooldownSeconds
+		if cd < 0 {
+			writeErr(w, http.StatusBadRequest, "cooldown_seconds 不能为负，0 表示关闭冷却")
+			return
+		}
+		if cd > 3600 {
+			writeErr(w, http.StatusBadRequest, "cooldown_seconds 最多 3600（1 小时）")
+			return
+		}
+		next.Cooldown = time.Duration(cd) * time.Second
+	}
 
 	// 日志
 	if in.AccessLog != nil {
@@ -211,7 +228,7 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.log.Info("配置已更新", "keys", len(next.ClientKeys), "strategy", next.Strategy,
-		"max_attempts", next.MaxAttempts, "keep_logs", next.KeepLogs)
+		"max_attempts", next.MaxAttempts, "cooldown", next.Cooldown, "keep_logs", next.KeepLogs)
 
 	adminTokenChanged := old.AdminToken != next.AdminToken
 	keysChanged := strings.Join(old.ClientKeys, ",") != strings.Join(next.ClientKeys, ",")
@@ -226,6 +243,6 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		"client_keys_new":       keysChanged,
 		"persist":               h.cfg.Path(),
 		"need_restart":          []string{},
-		"effective_immediately": []string{"网关密钥", "管理令牌", "路由策略", "重试状态码", "日志设置", "超时", "出网代理"},
+		"effective_immediately": []string{"网关密钥", "管理令牌", "路由策略", "重试状态码", "渠道失败冷却", "日志设置", "超时", "出网代理"},
 	})
 }

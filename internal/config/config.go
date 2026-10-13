@@ -56,6 +56,9 @@ type Runtime struct {
 	MaxAttempts      int
 	RetryStatus      []int
 	ForceStreamUsage bool
+	// Cooldown 渠道失败后的冷却时长；冷却期内该渠道不再进入候选列表，
+	// 避免「第一个渠道刚失败，下一轮会话又第一个打到它」。
+	Cooldown time.Duration
 
 	// 日志
 	AccessLog     bool
@@ -132,6 +135,9 @@ type RoutingConfig struct {
 	MaxAttempts      int    `yaml:"max_attempts"`
 	ForceStreamUsage bool   `yaml:"force_stream_usage"`
 	RetryStatus      []int  `yaml:"retry_status"`
+	// Cooldown 渠道失败后的冷却时长。nil = 未配置（用默认值）；
+	// 0 = 显式关闭冷却（恢复「每轮都从第一个渠道开始」的旧行为）。
+	Cooldown *Duration `yaml:"cooldown"`
 }
 
 // LoggingConfig 日志配置。
@@ -218,6 +224,7 @@ func (c *Config) runtimeFromFields() *Runtime {
 		MaxAttempts:      c.Routing.MaxAttempts,
 		RetryStatus:      append([]int(nil), c.Routing.RetryStatus...),
 		ForceStreamUsage: c.Routing.ForceStreamUsage,
+		Cooldown:         c.cooldownDuration(),
 		AccessLog:        c.Logging.AccessLog,
 		KeepLogs:         c.Logging.KeepLogs,
 		RecordPayload:    c.Logging.RecordPayload,
@@ -245,6 +252,12 @@ func (c *Config) runtimeFromFields() *Runtime {
 	if rt.Strategy == "" {
 		rt.Strategy = "priority_round_robin"
 	}
+	// 未显式配置冷却时给一个保守默认值；显式配 0 表示关闭冷却（保留旧行为）。
+	if c.Routing.Cooldown != nil {
+		rt.Cooldown = c.Routing.Cooldown.D()
+	} else {
+		rt.Cooldown = DefaultCooldown
+	}
 	return rt
 }
 
@@ -256,6 +269,7 @@ func (c *Config) syncFields(rt *Runtime) {
 	c.Routing.MaxAttempts = rt.MaxAttempts
 	c.Routing.RetryStatus = append([]int(nil), rt.RetryStatus...)
 	c.Routing.ForceStreamUsage = rt.ForceStreamUsage
+	c.Routing.Cooldown = durationPtr(rt.Cooldown)
 	c.Logging.AccessLog = rt.AccessLog
 	c.Logging.KeepLogs = rt.KeepLogs
 	c.Logging.RecordPayload = rt.RecordPayload
@@ -332,12 +346,29 @@ func (c *Config) applyDefaults() {
 	}
 }
 
+// cooldownDuration 返回生效的冷却时长（未配置时取默认值）。
+func (c *Config) cooldownDuration() time.Duration {
+	if c.Routing.Cooldown != nil {
+		return c.Routing.Cooldown.D()
+	}
+	return DefaultCooldown
+}
+
+func durationPtr(d time.Duration) *Duration {
+	v := Duration(d)
+	return &v
+}
+
 // DefaultPayloadLimit 单条日志每侧保存的摘要字符数上限。
 // 2000 偏小（长回复常被腰斩），提高到 8000；仍可通过设置页热更新调整。
 const DefaultPayloadLimit = 8000
 
 // DefaultKeepLogs 内存中保留的访问日志条数（页面查询只读这部分热数据）。
 const DefaultKeepLogs = 1000
+
+// DefaultCooldown 渠道失败后的默认冷却时长：该渠道在冷却期内不再进入候选列表，
+// 避免刚失败的渠道在下一轮请求里又被第一个尝试。设为 0 可关闭。
+const DefaultCooldown = 60 * time.Second
 
 // 访问日志落盘默认值。
 const (
@@ -396,6 +427,7 @@ func Save(c *Config) error {
 		Routing: RoutingConfig{
 			Strategy: rt.Strategy, MaxAttempts: rt.MaxAttempts,
 			ForceStreamUsage: rt.ForceStreamUsage, RetryStatus: append([]int(nil), rt.RetryStatus...),
+			Cooldown: durationPtr(rt.Cooldown),
 		},
 		Logging: LoggingConfig{
 			Level: c.Logging.Level, AccessLog: rt.AccessLog, KeepLogs: rt.KeepLogs,

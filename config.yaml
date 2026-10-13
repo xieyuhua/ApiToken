@@ -13,6 +13,9 @@ security:
 routing:
   strategy: priority_round_robin
   max_attempts: 2
+  # 渠道失败后的冷却时长：冷却期内该渠道不再进入候选列表，
+  # 避免「刚失败的渠道下一轮会话又第一个打到它」。设为 0s 关闭冷却。
+  cooldown: 60s
   force_stream_usage: true
   retry_status:
     - 400
