@@ -150,7 +150,9 @@ type LoggingConfig struct {
 
 	// 以下几项控制访问日志的异步落盘，改后需重启生效（涉及文件句柄）。
 	// 落盘由后台协程完成，请求路径只做一次非阻塞入队，不受磁盘速度影响。
-	FileEnabled bool   `yaml:"file_enabled"`
+	// FileEnabled 为指针：nil = 未配置（默认开启，日志重启不丢）；
+	// 显式 false = 纯内存模式（重启即清空）。
+	FileEnabled *bool  `yaml:"file_enabled"`
 	FileDir     string `yaml:"file_dir"`    // 空 = <data_dir>/logs
 	FileMaxMB   int    `yaml:"file_max_mb"` // 单个分段文件大小上限
 	FileKeep    int    `yaml:"file_keep"`   // 保留的最近分段文件数
@@ -277,6 +279,11 @@ func (c *Config) syncFields(rt *Runtime) {
 	c.Server.RequestTimeout = Duration(rt.RequestTimeout)
 	c.Server.StreamTimeout = Duration(rt.StreamTimeout)
 	c.Upstream.ProxyURL = rt.ProxyURL
+}
+
+// LogFileEnabled 访问日志是否落盘（nil 视为开启）。
+func (c *Config) LogFileEnabled() bool {
+	return c.Logging.FileEnabled == nil || *c.Logging.FileEnabled
 }
 
 func (c *Config) applyDefaults() {
@@ -432,6 +439,8 @@ func Save(c *Config) error {
 		Logging: LoggingConfig{
 			Level: c.Logging.Level, AccessLog: rt.AccessLog, KeepLogs: rt.KeepLogs,
 			RecordPayload: rt.RecordPayload, PayloadLimit: rt.PayloadLimit,
+			FileEnabled: c.Logging.FileEnabled, FileDir: c.Logging.FileDir,
+			FileMaxMB: c.Logging.FileMaxMB, FileKeep: c.Logging.FileKeep,
 		},
 		Upstream: c.Upstream,
 	}

@@ -452,7 +452,15 @@ async function loadUpstreamModels() {
   if (!draft.api_key) return toast('请先填写 API Key', true);
   showProbe('<div class="hint">正在拉取上游模型…</div>');
   try {
-    const r = await api('/admin/channels/models', {method: 'POST', body: JSON.stringify(draft)});
+    // 拉取模型是读取操作，走 GET：草稿配置放在 query 里
+    const q = new URLSearchParams({
+      base_url: draft.base_url,
+      api_key: draft.api_key,
+      auth_style: draft.auth_style,
+      auth_header: draft.auth_header,
+      timeout_sec: draft.timeout_sec
+    });
+    const r = await api('/admin/channels/models?' + q.toString());
     fetchedModels = r.models || [];
     if (!fetchedModels.length) {
       showProbe('<div class="hint">上游未返回模型列表，请手动填写模型名（留空表示放通全部）。</div>');
@@ -473,10 +481,17 @@ function renderModelPickList() {
   const hit = kw ? fetchedModels.filter(m => m.toLowerCase().includes(kw)) : fetchedModels;
   $('mdlList').innerHTML = hit.map(m =>
     '<label class="mchk-row"><input type="checkbox" class="mchk" value="' + esc(m) + '" style="width:auto"' +
-    (modelPicked.has(m) ? ' checked' : '') + ' />' +
+    (modelPicked.has(m) ? ' checked' : '') + ' onchange="onModelPick(this)" />' +
     '<span class="mono">' + (kw ? Combo.hl(m, kw) : esc(m)) + '</span></label>').join('')
     || '<div class="muted" style="padding:10px;text-align:center">没有匹配「' + esc(kw) + '」的模型</div>';
   updateModelCount(hit.length);
+}
+
+/** 勾选/取消单个模型：同步回 modelPicked（过滤视图只显示部分，未显示项的勾选状态保留） */
+function onModelPick(cb) {
+  if (cb.checked) modelPicked.add(cb.value);
+  else modelPicked.delete(cb.value);
+  updateModelCount();
 }
 
 function updateModelCount(visible) {
@@ -493,6 +508,11 @@ function toggleAllModels(checked) {
 }
 
 function applyModels() {
+  // 兜底：把当前可见勾选框的状态再合入一次（防止个别环境 change 事件未触发）
+  document.querySelectorAll('#mdlList .mchk').forEach(cb => {
+    if (cb.checked) modelPicked.add(cb.value);
+    else modelPicked.delete(cb.value);
+  });
   $('f_models').value = Array.from(modelPicked).join(', ');
   $('mdlDlg').close();
   showProbe('<div class="hint ok">已写入 ' + modelPicked.size + ' 个模型到「支持的模型」。</div>');
@@ -517,7 +537,8 @@ async function testChannel(id) {
 async function fetchUpstreamModels(id) {
   toast('拉取上游模型…');
   try {
-    const r = await api('/admin/channels/' + encodeURIComponent(id) + '/models', {method: 'POST', body: JSON.stringify({apply: false})});
+    // 读取操作用 GET；写入模型列表时才用 POST + apply=1
+    const r = await api('/admin/channels/' + encodeURIComponent(id) + '/models');
     if (r.models && r.models.length) {
       if (confirm('发现 ' + r.models.length + ' 个模型：\n' + r.models.slice(0, 25).join('\n') + '\n\n是否写入该渠道？')) {
         await api('/admin/channels/' + encodeURIComponent(id) + '/models', {method: 'POST', body: JSON.stringify({apply: true})});

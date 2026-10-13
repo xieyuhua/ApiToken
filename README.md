@@ -239,8 +239,8 @@ routes:
 | POST | `/admin/channels/{id}/toggle` | 启用/停用，body `{"enabled":false}` |
 | POST | `/admin/channels/{id}/test` | 已保存渠道的连通性测试，body `{"model":"...","prompt":"ping"}` |
 | POST | `/admin/channels/test` | **草稿测试**：直接提交渠道配置测试，不落库（添加渠道弹窗使用） |
-| POST | `/admin/channels/models` | **草稿拉模型**：提交渠道配置拉取上游 `/models`，不落库 |
-| POST | `/admin/channels/{id}/models` | 拉取上游模型，body `{"apply":true}` 直接写回渠道 |
+| GET | `/admin/channels/models` | **草稿拉模型**：`?base_url=&api_key=&auth_style=&auth_header=&timeout_sec=` 拉取上游 `/models`，不落库（拉取是读取操作，故用 GET） |
+| GET | `/admin/channels/{id}/models` | 拉取上游模型，`?apply=1` 直接写回渠道 |
 | GET/POST | `/admin/routes` | 路由列表 / 新增或更新路由 |
 | DELETE | `/admin/routes/{model}` | 删除路由 |
 | GET | `/admin/stats` | 用量、成功率、延迟、各渠道状态 |
@@ -271,20 +271,20 @@ routes:
 | `server.read_timeout` | `60s` | 读超时（含 SSE 场景，请求头+首包） |
 | `server.write_timeout` | `0`（不限制） | 写超时；SSE 长连接建议保持 0 |
 | `server.max_body_mb` | `32` | 请求体上限 |
-| `server.data_dir` | `./data` | 数据目录（`gateway.json`、日志） |
+| `server.data_dir` | `./data` | 数据目录（`gateway.json` 渠道/路由、`stats.json` 统计、`logs/` 访问日志） |
 | `security.client_keys` | 空 | 客户端密钥；留空 = 不校验（仅内网） |
 | `security.admin_token` | 空 | 管理令牌；留空 = 管理接口不校验 |
 | `routing.strategy` | `priority_round_robin` | 路由策略，见第 5 节（热更新） |
 | `routing.max_attempts` | `3` | 单请求最多尝试的渠道数（热更新） |
 | `routing.retry_status` | `[408,409,425,429,500,502,503,504,529]` | 命中这些状态码才切换渠道（热更新） |
 | `routing.cooldown` | `60s` | 渠道失败后的冷却时长，冷却期内不再尝试该渠道；`0s` 关闭（热更新） |
-| `routing.force_stream_usage` | `false` | 开启后自动注入 `stream_options` 统计流式 token（热更新）。<br/>`/v1/messages` 无论该开关如何都会开启（Anthropic 靠末尾数据块取用量） |
+| `routing.force_stream_usage` | `false` | 开启后自动注入 `stream_options` 统计流式 token（热更新）。<br/>`/v1/messages` 无论该开关如何都会开启（Anthropic 靠末尾数据块取用量）<br/>上游若不认识该字段（400 且错误点名 `stream_options`），网关会**自动去掉该字段重试**并记住该渠道，后续不再注入 |
 | `logging.level` | `info` | 日志级别 |
 | `logging.access_log` | — | 是否打访问日志（热更新） |
 | `logging.keep_logs` | `1000` | 内存保留的日志条数，重启清空（热更新，会顺带裁剪现有日志） |
 | `logging.record_payload` | — | 是否记录请求/响应摘要（可能含敏感内容）（热更新） |
 | `logging.payload_limit` | `8000` | 每侧摘要字符数上限，范围 100~200000（热更新） |
-| `logging.file_enabled` | `false` | 是否把访问日志异步落盘为 JSONL 分段文件（改后需重启，详见 10.4） |
+| `logging.file_enabled` | `true` | 是否把访问日志异步落盘为 JSONL 分段文件（改后需重启，详见 10.4）。默认开启：**除非手动清理，日志重启不丢**；显式 `false` 时只保留内存日志，重启即清空 |
 | `logging.file_dir` | `<data_dir>/logs` | 分段文件目录 |
 | `logging.file_max_mb` | `64` | 单个分段文件大小上限，超出滚动新文件 |
 | `logging.file_keep` | `7` | 保留的最近分段文件数，更早的自动删除 |
@@ -346,7 +346,10 @@ Key 无效或未生效。DeepSeek、商汤、腾讯 WorkBuddy 的 Key 各自独�
 
 日志默认存内存（条数由 `logging.keep_logs` 控制，默认 1000）。需要记录请求/响应摘要时打开 `logging.record_payload`（可能含敏感内容，生产环境谨慎开启）。
 
-打开 `logging.file_enabled` 后，日志还会由后台协程**异步落盘**为 JSONL 分段文件（请求路径不做磁盘 IO，重启后自动恢复最近若干条到日志页）。机制、文件命名与清理策略见 10.4。
+**数据持久化（除非手动清理，否则重启不丢）**：
+
+- **访问日志**：`logging.file_enabled` 默认开启，日志由后台协程**异步落盘**为 JSONL 分段文件（请求路径不做磁盘 IO，重启后自动恢复最近 `keep_logs` 条到日志页）。显式设为 `false` 则只保留内存日志，重启即清空。机制、文件命名与清理策略见 10.4。
+- **统计数据**：渠道/模型/全局三个维度的请求数、成功率、token 用量、延迟会定时写入 `data/stats.json`（默认 3 秒一批，优雅退出时最终 flush），重启后自动恢复，页面上的累计用量不会清零。该文件与 `data/gateway.json`（渠道/路由）相互独立，删掉 `stats.json` 或点「清空日志」才会重新累计。
 
 摘要长度由 `logging.payload_limit` 控制（默认 **8000 字符**，按字符而非字节计，中文 1 字算 1 个字符；设置页可热更新，范围 100~200000）。超长内容会被截断，日志详情会明确标注「显示 X / 原始 Y 字」，流式回复则提示「仅记录前 N 字」——两者都是**存储上限**导致，并非页面展示不全。
 
@@ -580,7 +583,7 @@ channels:
 
 | 配置项 | 默认 | 说明 |
 | --- | --- | --- |
-| `file_enabled` | `false` | 是否落盘；关闭时只保留内存日志 |
+| `file_enabled` | `true` | 是否落盘；关闭时只保留内存日志（重启即清空） |
 | `file_dir` | `<data_dir>/logs` | 分段文件目录 |
 | `file_max_mb` | `64` | 单文件大小上限，超出滚动新文件 |
 | `file_keep` | `7` | 保留的最近文件数，更早的自动删除 |
@@ -588,6 +591,14 @@ channels:
 文件名形如 `access-20261009-153000.123-001.jsonl`，**时间戳后带毫秒与序号**：
 滚动常发生在同一毫秒内，只用秒级时间戳会让新段与旧段同名，
 配合 `O_APPEND` 等于写回旧文件、文件无限增长。序号定长补零，保证字典序即时间序。
+
+**统计：与日志独立的第二条持久化链路**
+
+渠道 / 模型 / 全局三个维度的累计数据（请求数、成功率、token、延迟、最近错误）
+由同一条流水线标记「脏」，后台协程每 3 秒把快照原子写进 `data/stats.json`
+（`tmp + rename`，与 `gateway.json` 分开，避免高频统计与管理写操作互相挤）；
+优雅退出时（`SIGINT`/`SIGTERM`）会做最终 flush。启动时若文件存在则恢复，
+因此重启后控制台的累计用量、成功率不会归零；只有手动删除该文件才重新累计。
 
 **查询：读内存热数据，不做全量拷贝**
 

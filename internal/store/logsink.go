@@ -70,7 +70,7 @@ type LogSinkOptions struct {
 //   - file_enabled=false 时返回 nil（纯内存模式，AddLog 直接入缓冲）；
 //   - 开启落盘时启动后台协程，并把最近的分段文件尾部恢复进内存缓冲。
 func newLogSink(cfg *config.Config, buf *LogBuffer, log *slog.Logger) *LogSink {
-	if !cfg.Logging.FileEnabled {
+	if !cfg.LogFileEnabled() {
 		return nil
 	}
 	dir := strings.TrimSpace(cfg.Logging.FileDir)

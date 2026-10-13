@@ -43,9 +43,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /admin/channels/{id}", h.deleteChannel)
 	mux.HandleFunc("POST /admin/channels/{id}/toggle", h.toggleChannel)
 	mux.HandleFunc("POST /admin/channels/{id}/test", h.testChannel)
+	mux.HandleFunc("GET /admin/channels/{id}/models", h.fetchModels)
 	mux.HandleFunc("POST /admin/channels/{id}/models", h.fetchModels)
 	// 草稿探测：新建渠道未保存时也能测试 / 拉取模型
 	mux.HandleFunc("POST /admin/channels/test", h.probeDraft)
+	// 拉取模型是读取操作，用 GET；POST 保留兼容旧调用方
+	mux.HandleFunc("GET /admin/channels/models", h.fetchDraftModels)
 	mux.HandleFunc("POST /admin/channels/models", h.fetchDraftModels)
 
 	mux.HandleFunc("GET /admin/routes", h.listRoutes)
@@ -325,6 +328,10 @@ func (h *Handler) fetchModels(w http.ResponseWriter, r *http.Request) {
 		Apply bool `json:"apply"`
 	}
 	_ = decodeJSON(r, &body)
+	// GET 时 apply 走 query（?apply=1）
+	if r.Method == http.MethodGet && !body.Apply {
+		body.Apply = r.URL.Query().Get("apply") == "1" || strings.EqualFold(r.URL.Query().Get("apply"), "true")
+	}
 	ch, ok := h.store.GetChannel(r.PathValue("id"))
 	if !ok {
 		writeErr(w, http.StatusNotFound, "渠道不存在")

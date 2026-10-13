@@ -103,6 +103,7 @@
       <div>
         <label>流式请求自动统计 token</label>
         <select id="forceStreamUsage"><option value="true">开启</option><option value="false">关闭</option></select>
+        <p class="hint">注入 <code>stream_options.include_usage</code> 拿流式用量；上游不认该字段时会自动去掉并重试</p>
       </div>
     </div>
   </section>
@@ -221,6 +222,7 @@ async function load() {
       row('监听地址', esc(d.meta.addr) + '（需重启）') +
       row('配置文件', esc(d.meta.config_file) + '（保存会写回此文件）') +
       row('数据文件', esc(d.meta.data_file)) +
+      row('统计文件', esc(d.meta.stats_file || '') + '（累计用量，重启恢复；删除后重新累计）') +
       row('热更新字段', d.meta.hot_fields.map(esc).join('、')) +
       row('需重启字段', d.meta.restart_needed.map(esc).join('、'));
   } catch (e) { toast(e.message, true); }

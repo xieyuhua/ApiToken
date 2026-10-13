@@ -33,6 +33,19 @@ type Store struct {
 	// 只由 Store.mu 保护，读写都在持锁路径上完成。
 	cooldownUntil map[string]time.Time
 
+	// noStreamOpts 已确认「不接受 stream_options 字段」的渠道。
+	// 记住后该渠道的流式请求不再注入该字段，省掉每次请求先撞一次 400。
+	// 仅内存态：上游哪天支持了，重启网关即重新探测。
+	noStreamOpts map[string]bool
+
+	// 统计持久化：usage / totals / 渠道 Stats 定时落盘到 stats.json，
+	// 重启后恢复，避免「一重启用量数据全清零」。除非用户手动清理，否则一直保留。
+	statsFile   string
+	statsSaveMu sync.Mutex
+	statsDirty  atomic.Bool
+	statsStop   chan struct{}
+	statsStopOnce sync.Once
+
 	usage  map[string]*model.ModelUsage
 	totals model.ModelUsage
 
@@ -70,6 +83,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Store, error) {
 		health:        map[string]HealthInfo{},
 		usage:         map[string]*model.ModelUsage{},
 		cooldownUntil: map[string]time.Time{},
+		noStreamOpts:  map[string]bool{},
 		logs:          NewLogBuffer(cfg.RT().KeepLogs),
 		started:       time.Now(),
 	}
@@ -78,6 +92,11 @@ func New(cfg *config.Config, log *slog.Logger) (*Store, error) {
 	if err := s.load(); err != nil {
 		return nil, err
 	}
+	// 统计恢复：渠道已就绪后再灌入历史统计
+	s.statsFile = statsFilePath(s.dataFile)
+	s.loadStats()
+	s.statsStop = make(chan struct{})
+	go s.statsFlushLoop()
 	if len(s.channels) == 0 {
 		for i := range cfg.Channels {
 			ch := cfg.Channels[i]
@@ -242,6 +261,7 @@ func (s *Store) DeleteChannel(id string) error {
 	delete(s.channels, id)
 	delete(s.health, id)
 	delete(s.cooldownUntil, id)
+	delete(s.noStreamOpts, id)
 	for i, cid := range s.order {
 		if cid == id {
 			s.order = append(s.order[:i], s.order[i+1:]...)
@@ -367,6 +387,23 @@ func (s *Store) markCooldown(id string, until time.Time) {
 		s.cooldownUntil = map[string]time.Time{}
 	}
 	s.cooldownUntil[id] = until
+}
+
+// SupportsStreamOptions 渠道是否可以注入 stream_options（未被上游拒绝过）。
+func (s *Store) SupportsStreamOptions(id string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return !s.noStreamOpts[id]
+}
+
+// MarkStreamOptionsUnsupported 记录「上游不接受 stream_options」，之后不再注入。
+func (s *Store) MarkStreamOptionsUnsupported(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.noStreamOpts == nil {
+		s.noStreamOpts = map[string]bool{}
+	}
+	s.noStreamOpts[id] = true
 }
 
 // candidateSnapshot 在读锁内取出候选快照。
@@ -629,6 +666,7 @@ func (s *Store) RecordChannelAttempt(channelID string, ok bool, latency time.Dur
 	} else if cd := s.cooldownSetting(); cd > 0 {
 		s.markCooldown(channelID, time.Now().Add(cd))
 	}
+	s.markStatsDirty()
 }
 
 // RecordFinish 一次性记录一次请求的最终结果与该次尝试的渠道统计。
@@ -663,6 +701,7 @@ func (s *Store) RecordFinish(channelID, modelName string, ok bool, total, attemp
 	} else if cd := s.cooldownSetting(); cd > 0 {
 		s.markCooldown(channelID, now.Add(cd))
 	}
+	s.markStatsDirty()
 
 	// 模型 + 全局维度
 	u := s.usage[modelName]
@@ -685,6 +724,7 @@ func (s *Store) RecordFinish(channelID, modelName string, ok bool, total, attemp
 		u.Failed++
 		s.totals.Failed++
 	}
+	s.markStatsDirty()
 }
 
 // RecordRequest 记录一次客户端请求（最终结果）。
@@ -711,6 +751,7 @@ func (s *Store) RecordRequest(name string, ok bool, latency time.Duration, promp
 		u.Failed++
 		s.totals.Failed++
 	}
+	s.markStatsDirty()
 }
 
 // Snapshot 统计快照。
@@ -802,10 +843,12 @@ func (s *Store) AddLog(e model.LogEntry) {
 }
 
 // CloseLogs 停止日志协程并 flush 残留日志（进程退出前调用）。
+// 同时做统计的最终落盘，保证优雅退出不丢最近几秒的用量。
 func (s *Store) CloseLogs() {
 	if s.sink != nil {
 		s.sink.Close()
 	}
+	s.stopStatsFlusher()
 }
 
 // LogStats 返回日志丢弃数与已落盘数。

@@ -135,13 +135,19 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, in relayRequest)
 	}
 
 	var lastErr *upstreamError
+	// streamOptsRejected 已因「上游不接受 stream_options」降级过一次。
+	// 只降级一次：若去掉该字段后仍失败，按正常故障转移逻辑处理。
+	streamOptsRejected := false
 
 	for i := 0; i < limit; i++ {
 		cand := candidates[i]
 		entry.Attempts = i + 1
 		attStart := time.Now()
 
-		res, uerr := h.attempt(w, r, reqID, cand, payload, stream, in.Resp, in.BuildOpts)
+		opts := in.BuildOpts
+		// 已记住该渠道不接受 stream_options，或本次已降级：不再注入
+		opts.DisableStreamOptions = streamOptsRejected || !h.store.SupportsStreamOptions(cand.ID)
+		res, uerr := h.attempt(w, r, reqID, cand, payload, stream, in.Resp, withClientUA(opts, r))
 		latency := time.Since(attStart)
 		if uerr == nil {
 			// 成功路径：渠道统计与请求级统计合并为一次加锁写入
@@ -178,6 +184,18 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, in relayRequest)
 		attemptEntry.LatencyMS = latency.Milliseconds()
 		attemptEntry.ResponseSnippet = "" // 失败原因只放在 Error 字段
 		h.finish(attemptEntry)
+
+		// 上游不认识 stream_options（400 且错误信息点名该字段）：
+		// 去掉注入重试同一渠道，避免「流式一律 400、非流式却正常」。
+		// 只降级一次，避免与其他重试策略相互放大。
+		if !streamOptsRejected && uerr.Status == http.StatusBadRequest && streamOptionsRejected(uerr.Body) {
+			streamOptsRejected = true
+			h.store.MarkStreamOptionsUnsupported(cand.ID) // 记住：后续请求不再注入
+			i--                                           // 重试不占用故障转移额度
+			h.log.Info("上游不接受 stream_options，已去掉该字段重试",
+				"request_id", reqID, "channel", cand.ID, "model", modelName)
+			continue
+		}
 
 		if !uerr.retryable(h.cfg.RT().RetryStatus) {
 			break

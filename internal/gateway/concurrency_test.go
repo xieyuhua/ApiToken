@@ -233,9 +233,8 @@ func TestChatWithFileLoggingEndToEnd(t *testing.T) {
 			Models: []string{"mock-chat"}, Priority: 1, Weight: 1, Enabled: true},
 	}, config.LoggingConfig{
 		Level: "error", KeepLogs: 100, RecordPayload: true, PayloadLimit: 2000,
-		FileEnabled: true, FileMaxMB: 1, FileKeep: 3,
+		FileEnabled: boolPtrCfg(true), FileMaxMB: 1, FileKeep: 3,
 	})
-
 	rec := post(t, h, "/v1/chat/completions", `{"model":"mock-chat","messages":[{"role":"user","content":"hi"}]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("请求失败: %d %s", rec.Code, rec.Body.String())
@@ -284,3 +283,6 @@ func TestChatWithFileLoggingEndToEnd(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// boolPtrCfg 返回布尔指针（LoggingConfig.FileEnabled 用指针区分未配置与显式关闭）。
+func boolPtrCfg(b bool) *bool { return &b }

@@ -93,8 +93,11 @@ func newTestGateway(t *testing.T, channels []model.Channel) http.Handler {
 // newTestGatewayWithDir 额外返回数据目录，供需要校验持久化文件的用例使用。
 func newTestGatewayWithDir(t *testing.T, channels []model.Channel) (http.Handler, string) {
 	t.Helper()
+	// 默认关闭日志落盘：这些用例断言「请求返回后日志立即可查」，
+	// 落盘模式下日志要等后台批次 flush 才进内存缓冲。
 	return newTestGatewayWithLogging(t, channels, config.LoggingConfig{
 		Level: "error", KeepLogs: 100, RecordPayload: true, PayloadLimit: 2000,
+		FileEnabled: boolPtrCfg(false),
 	})
 }
 

@@ -150,6 +150,77 @@ func TestCooldownOnExplicitRoute(t *testing.T) {
 	}
 }
 
+// 统计（渠道/模型/全局）落盘 stats.json，重启后恢复，不清零。
+func TestStatsPersistAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	dataDir := filepath.Join(dir, "data")
+	yaml := `server:
+  addr: ":0"
+  data_dir: "` + filepath.ToSlash(dataDir) + `"
+security:
+  client_keys: ["sk-x"]
+  admin_token: "adm"
+routing:
+  strategy: "failover"
+  max_attempts: 3
+channels:
+  - id: "a"
+    name: "a"
+    base_url: "https://example.com/v1"
+    api_key: "sk-x"
+    models: ["m1"]
+    enabled: true
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	newStore := func() *Store {
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			t.Fatalf("load config: %v", err)
+		}
+		st, err := New(cfg, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+		if err != nil {
+			t.Fatalf("new store: %v", err)
+		}
+		return st
+	}
+
+	st := newStore()
+	// 与 serve() 一致：成功走 RecordFinish；失败走 RecordChannelAttempt + RecordRequest
+	st.RecordFinish("a", "m1", true, 120*time.Millisecond, 30*time.Millisecond, 10, 20, "")
+	st.RecordChannelAttempt("a", false, 50*time.Millisecond, 0, 0, "boom")
+	st.RecordRequest("m1", false, 50*time.Millisecond, 0, 0)
+	st.CloseLogs() // 优雅退出：最终 flush
+
+	// 模拟重启：同一数据目录重新加载
+	st2 := newStore()
+	defer st2.CloseLogs()
+	snap := st2.Snapshot()
+	if snap.TotalRequests != 2 || snap.TotalSuccess != 1 || snap.TotalFailed != 1 {
+		t.Fatalf("重启后全局统计 = %+v, want requests=2 success=1 failed=1", snap)
+	}
+	if snap.PromptTokens != 10 || snap.CompletionTokens != 20 {
+		t.Fatalf("重启后 token 统计 = %d/%d, want 10/20", snap.PromptTokens, snap.CompletionTokens)
+	}
+	var ch *model.ChannelStat
+	for i := range snap.Channels {
+		if snap.Channels[i].ID == "a" {
+			ch = &snap.Channels[i]
+		}
+	}
+	if ch == nil || ch.Stats.Requests != 2 || ch.Stats.Failed != 1 {
+		t.Fatalf("重启后渠道统计 = %+v, want requests=2 failed=1", ch)
+	}
+	if m := snap.Models["m1"]; m == nil || m.Requests != 2 {
+		t.Fatalf("重启后模型统计 = %+v, want requests=2", m)
+	}	// 数据文件存在（用户不手动清理就一直保留）
+	if _, err := os.Stat(st2.StatsFile()); err != nil {
+		t.Fatalf("stats.json 应存在: %v", err)
+	}
+}
+
 func candidateIDs(list []model.Candidate) []string {
 	out := make([]string, 0, len(list))
 	for _, c := range list {

@@ -136,6 +136,19 @@ func (e *upstreamError) Error() string {
 	}
 }
 
+// streamOptionsRejected 判断上游 400 是否由 stream_options 字段引起。
+// 不同平台的错误文案不一，取字段名与作用开关两类关键词。
+func streamOptionsRejected(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	msg := strings.ToLower(string(body))
+	return strings.Contains(msg, "stream_options") ||
+		strings.Contains(msg, "include_usage") ||
+		strings.Contains(msg, "streamoptions")
+}
+
+// retryable 判断错误是否值得切换渠道重试。
 func (e *upstreamError) retryable(retryStatus []int) bool {
 	if e.Transport != nil {
 		// 上下文取消（客户端断开）不重试
@@ -162,6 +175,11 @@ type BuildOpts struct {
 	// Anthropic 端点依赖它：OpenAI 流式把用量放在最后一个数据块，
 	// 不开启则流式请求的 token 统计恒为 0。
 	ForceUsage bool
+	// DisableStreamOptions 关闭 stream_options 注入（自动降级用）。
+	//
+	// 不少上游（腾讯 WorkBuddy、部分商汤端点）不认识 stream_options 字段，
+	// 流式请求带上它会被直接 400 拒绝；此时网关会自动去掉该字段重试。
+	DisableStreamOptions bool
 	// UserAgent 透传客户端的 User-Agent（如 OpenAI SDK、Chatbox、Cline 的真实 UA）。
 	//
 	// 为空表示不设置，由 Go 客户端填默认的 Go-http-client/1.1；
@@ -188,7 +206,7 @@ func (h *Handler) BuildRequestOpts(ctx context.Context, cand model.Candidate, pa
 	for k, v := range ch.ExtraParams {
 		body[k] = v
 	}
-	forceUsage := opts.ForceUsage || h.cfg.Routing.ForceStreamUsage
+	forceUsage := (opts.ForceUsage || h.cfg.Routing.ForceStreamUsage) && !opts.DisableStreamOptions
 	if stream && forceUsage {
 		if so, ok := body["stream_options"].(map[string]any); ok {
 			so["include_usage"] = true

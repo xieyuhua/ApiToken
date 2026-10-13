@@ -1,7 +1,9 @@
 package admin
 
 import (
+	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/demo1/apitoken/internal/model"
@@ -38,10 +40,14 @@ func (h *Handler) fetchDraftModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"models": ids})
 }
 
-// draftChannel 解析并校验请求体中的渠道草稿。
+// draftChannel 解析并校验请求中的渠道草稿。
+// GET 时从 query 读取（拉取模型是读取操作，避免为带配置而硬凑 POST）；
+// POST 时仍从 body 读取，兼容旧调用方。
 func (h *Handler) draftChannel(w http.ResponseWriter, r *http.Request) (model.Channel, bool) {
 	var ch model.Channel
-	if err := decodeJSON(r, &ch); err != nil {
+	if r.Method == http.MethodGet {
+		ch = draftFromQuery(r)
+	} else if err := decodeJSON(r, &ch); err != nil {
 		writeErr(w, http.StatusBadRequest, "渠道配置解析失败: "+err.Error())
 		return ch, false
 	}
@@ -52,4 +58,29 @@ func (h *Handler) draftChannel(w http.ResponseWriter, r *http.Request) (model.Ch
 	}
 	applyChannelDefaults(&ch)
 	return ch, true
+}
+
+// draftFromQuery 从 query 参数还原渠道草稿（GET /admin/channels/models 用）。
+// 只覆盖拉取模型需要的鉴权相关字段。
+func draftFromQuery(r *http.Request) model.Channel {
+	q := r.URL.Query()
+	ch := model.Channel{
+		BaseURL:    q.Get("base_url"),
+		APIKey:     q.Get("api_key"),
+		AuthStyle:  q.Get("auth_style"),
+		AuthHeader: q.Get("auth_header"),
+		AuthPrefix: q.Get("auth_prefix"),
+		ChatPath:   q.Get("chat_path"),
+	}
+	if n, err := strconv.Atoi(q.Get("timeout_sec")); err == nil {
+		ch.TimeoutSec = n
+	}
+	// extra_headers 以 JSON 字符串传递：{"X-Foo":"bar"}
+	if raw := strings.TrimSpace(q.Get("extra_headers")); raw != "" {
+		var hdrs map[string]string
+		if json.Unmarshal([]byte(raw), &hdrs) == nil {
+			ch.ExtraHeaders = hdrs
+		}
+	}
+	return ch
 }

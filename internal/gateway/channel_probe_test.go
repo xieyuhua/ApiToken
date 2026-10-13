@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -49,6 +50,26 @@ func TestChannelDraftProbe(t *testing.T) {
 	rec = call("/admin/channels/models", draft(""))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "mock-reason") {
 		t.Fatalf("草稿拉取模型失败: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// 拉取模型是读取操作：GET + query 传草稿配置（前端「添加渠道」弹窗实际用法）
+	getURL := "/admin/channels/models?base_url=" + url.QueryEscape(mock.srv.URL+"/v1") +
+		"&api_key=k-draft&auth_style=bearer&timeout_sec=0"
+	reqGet := httptest.NewRequest(http.MethodGet, getURL, nil)
+	reqGet.Header.Set("X-Admin-Token", "adm-test")
+	recGet := httptest.NewRecorder()
+	h.ServeHTTP(recGet, reqGet)
+	if recGet.Code != http.StatusOK || !strings.Contains(recGet.Body.String(), "mock-reason") {
+		t.Fatalf("GET 草稿拉取模型失败: %d %s", recGet.Code, recGet.Body.String())
+	}
+
+	// 缺少 base_url（GET）
+	reqBad := httptest.NewRequest(http.MethodGet, "/admin/channels/models?api_key=k", nil)
+	reqBad.Header.Set("X-Admin-Token", "adm-test")
+	recBad := httptest.NewRecorder()
+	h.ServeHTTP(recBad, reqBad)
+	if recBad.Code != http.StatusBadRequest {
+		t.Fatalf("GET 缺少 base_url 应返回 400，实际 %d: %s", recBad.Code, recBad.Body.String())
 	}
 
 	// 草稿不应被保存
