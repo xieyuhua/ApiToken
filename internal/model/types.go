@@ -9,6 +9,29 @@ import (
 // Version 网关版本号。
 const Version = "1.0.0"
 
+// NewChannelID 由名称生成渠道 ID：小写字母/数字保留，空格、-、_ 归一为 -，
+// 截断到 20 字符，追加 HHMMSS 时间戳后缀保证唯一；名称不含有效字符时退回 "channel"。
+// 管理端新增渠道与配置文件播种渠道共用这一套规则，避免两处行为分叉。
+func NewChannelID(name string) string {
+	base := make([]rune, 0, 20)
+	for _, r := range strings.ToLower(name) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			base = append(base, r)
+		case r == ' ' || r == '-' || r == '_':
+			base = append(base, '-')
+		}
+		if len(base) >= 20 {
+			break
+		}
+	}
+	id := strings.Trim(string(base), "-")
+	if id == "" {
+		id = "channel"
+	}
+	return id + "-" + time.Now().Format("150405")
+}
+
 // Channel 一个上游账号 / 服务节点。
 type Channel struct {
 	ID      string `json:"id" yaml:"id"`
@@ -130,6 +153,7 @@ type LogEntry struct {
 	Method           string    `json:"method"`
 	Path             string    `json:"path"`
 	ClientIP         string    `json:"client_ip"`
+	UserAgent        string    `json:"user_agent,omitempty"`
 	Model            string    `json:"model"`
 	UpstreamModel    string    `json:"upstream_model,omitempty"`
 	ChannelID        string    `json:"channel_id,omitempty"`

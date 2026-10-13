@@ -217,6 +217,7 @@ func TestMatchKeyword(t *testing.T) {
 	e := entry(1)
 	e.ChannelName = "DeepSeek 官方"
 	e.Error = "rate limited"
+	e.UserAgent = "OpenAI/Python 1.0"
 
 	cases := []struct {
 		kw   string
@@ -227,6 +228,7 @@ func TestMatchKeyword(t *testing.T) {
 		{"rate limited", true},
 		{"req-001", true},
 		{"mock-chat", true},
+		{"openai/python", true}, // User-Agent 可搜索
 		{"nope", false},
 		{"", true},
 	}

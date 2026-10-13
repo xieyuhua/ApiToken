@@ -61,9 +61,7 @@ func (openAIResponder) Stream() streamWriter { return &openAIStream{} }
 func (openAIResponder) ConvertMs() int64 { return 0 }
 
 // openAIStream 原样转发上游 SSE 行。
-type openAIStream struct {
-	usage Usage
-}
+type openAIStream struct{}
 
 func (s *openAIStream) Begin() []byte { return nil }
 
@@ -79,7 +77,7 @@ func (s *openAIStream) Line(payload string, done bool) []byte {
 
 func (s *openAIStream) End() []byte { return nil }
 
-func (s *openAIStream) Usage() Usage { return s.usage }
+func (s *openAIStream) Usage() Usage { return Usage{} }
 
 func (s *openAIStream) Dropped() []string { return nil }
 

@@ -215,7 +215,7 @@ channels:
 	}
 	if m := snap.Models["m1"]; m == nil || m.Requests != 2 {
 		t.Fatalf("重启后模型统计 = %+v, want requests=2", m)
-	}	// 数据文件存在（用户不手动清理就一直保留）
+	} // 数据文件存在（用户不手动清理就一直保留）
 	if _, err := os.Stat(st2.StatsFile()); err != nil {
 		t.Fatalf("stats.json 应存在: %v", err)
 	}

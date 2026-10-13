@@ -79,15 +79,19 @@ button.mini{padding:3px 9px;font-size:12px}
 .toast.err{border-left-color:var(--err)}
 
 dialog{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;width:min(680px,94vw);padding:0;box-shadow:var(--shadow)}
+/* 调用详情内容较宽（摘要/端点/UA），给更大的弹窗 */
+#detailDlg{width:min(760px,94vw)}
 dialog::backdrop{background:rgba(0,0,0,.55)}
 .dlg-head{padding:14px 16px;border-bottom:1px solid var(--border);font-weight:600}
 .dlg-body{padding:16px;max-height:65vh;overflow:auto}
 .dlg-foot{padding:12px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
 
-pre.log{font-family:ui-monospace,Consolas,monospace;font-size:12px;background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:10px;margin:0;max-height:320px;overflow:auto;white-space:pre-wrap;word-break:break-all}
-.kv{display:grid;grid-template-columns:110px 1fr;gap:6px 12px;font-size:13px}
+pre.log{font-family:ui-monospace,Consolas,monospace;font-size:12px;background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:10px;margin:0;max-height:320px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal}
+.kv{display:grid;grid-template-columns:110px 1fr;gap:6px 12px;font-size:13px;align-items:start}
 .kv .k{color:var(--muted)}
+/* 端点等长 URL/值按需断行，不撑破弹窗 */
+.kv span{min-width:0;overflow-wrap:anywhere}
 .bars{display:flex;flex-direction:column;gap:6px;font-size:12px}
 .bar{display:grid;grid-template-columns:150px 1fr 90px;gap:8px;align-items:center}
 .bar .track{background:var(--code-bg);border-radius:4px;height:8px;overflow:hidden}
@@ -102,10 +106,12 @@ pre.log{font-family:ui-monospace,Consolas,monospace;font-size:12px;background:va
 .copybtn{margin-left:6px}
 
 /* 调用日志详情：概要 + 链路分组 */
-.log-sum{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}
-.log-sum-item{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px 10px}
+.log-sum{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
+.log-sum-item{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px 10px;min-width:0}
 .log-sum-item .k{color:var(--muted);font-size:11px}
-.log-sum-item .v{font-size:13px;font-weight:600;margin-top:2px;word-break:break-all}
+.log-sum-item .v{font-size:13px;font-weight:600;margin-top:2px;overflow-wrap:anywhere}
+/* Request ID 等宽小字，独占一行 */
+.log-sum-item .v.mono{font-size:12px;font-weight:500;font-family:ui-monospace,Consolas,monospace;word-break:break-all}
 .log-sub{font-size:12px;color:var(--muted);margin:14px 0 6px}
 .log-block{border:1px solid var(--border);border-left:3px solid var(--ok-bd);border-radius:8px;padding:10px 12px;margin-bottom:10px;background:var(--panel2)}
 .log-block.bad{border-left-color:var(--err-bd);background:var(--err-bg)}

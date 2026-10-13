@@ -64,6 +64,7 @@ func (h *Handler) logDetail(w http.ResponseWriter, r *http.Request) {
 		"request_id": id,
 		"model":      items[0].Model,
 		"client_ip":  items[0].ClientIP,
+		"user_agent": items[0].UserAgent,
 		"attempts":   items,
 		"summary":    summary,
 	})
@@ -113,12 +114,12 @@ func (h *Handler) exportLogs(w http.ResponseWriter, r *http.Request) {
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
 	_ = cw.Write([]string{
-		"time", "request_id", "client_ip", "model", "upstream_model", "channel",
+		"time", "request_id", "client_ip", "user_agent", "model", "upstream_model", "channel",
 		"stream", "status", "latency_ms", "attempts", "prompt_tokens", "completion_tokens", "error", "endpoint",
 	})
 	for _, e := range page.Items {
 		_ = cw.Write([]string{
-			e.Time.Format("2006-01-02 15:04:05.000"), e.RequestID, e.ClientIP, e.Model, e.UpstreamModel,
+			e.Time.Format("2006-01-02 15:04:05.000"), e.RequestID, e.ClientIP, e.UserAgent, e.Model, e.UpstreamModel,
 			e.ChannelID, strconv.FormatBool(e.Stream), strconv.Itoa(e.Status),
 			strconv.FormatInt(e.LatencyMS, 10), strconv.Itoa(e.Attempts),
 			strconv.FormatInt(e.PromptTokens, 10), strconv.FormatInt(e.CompletionTokens, 10),
@@ -141,7 +142,7 @@ func sortedKeys(m map[string]bool) []string {
 	for k := range m {
 		out = append(out, k)
 	}
-	sortStrings(out)
+	sort.Strings(out)
 	return out
 }
 
@@ -152,12 +153,4 @@ func sortedPairs(m map[string]string) []map[string]string {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i]["id"] < out[j]["id"] })
 	return out
-}
-
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
 }

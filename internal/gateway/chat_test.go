@@ -205,6 +205,8 @@ func TestChatModelSearchableCombo(t *testing.T) {
 	for _, want := range []string{
 		"function initModelCombo(", "Combo.attach(inp", "function modelOptions(",
 		"modelChannelText(m)", "initModelCombo();",
+		// 连接配置历史管理
+		"function upsertConn(", "function renderConns(", "apitoken_conns",
 	} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("chat.js 缺少 %q", want)

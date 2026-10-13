@@ -72,7 +72,7 @@
       <thead><tr>
         <th class="nowrap">时间</th><th>模型</th><th>渠道</th><th>类型</th>
         <th>状态</th><th class="nowrap">耗时</th><th class="nowrap">尝试</th>
-        <th class="nowrap">Token(入/出)</th><th>说明</th><th>操作</th>
+        <th class="nowrap">Token(入/出)</th><th class="nowrap">来源 IP</th><th>User-Agent</th><th>说明</th><th>操作</th>
       </tr></thead>
       <tbody id="logBody"></tbody>
     </table>
@@ -224,7 +224,8 @@ function contentBlock(title, text, full, capped) {
   }
   return '<div class="log-sub">' + esc(title) +
       '<button class="linkbtn" onclick="toggleLogBox(this)">展开</button>' +
-      '<button class="linkbtn" onclick="copyText(' + JSON.stringify(text) + ')">复制</button>' +
+      // JSON.stringify 的引号会破坏 onclick 属性，必须再经 esc 转义（含引号的回复很常见）
+      '<button class="linkbtn" onclick="copyText(' + esc(JSON.stringify(text)) + ')">复制</button>' +
       (tip ? '<span class="log-tipflag">已截断</span>' : '') +
     '</div>' +
     '<pre class="log" data-collapsed="1">' + esc(text) + '</pre>' +
@@ -241,13 +242,14 @@ function toggleLogBox(btn) {
 }
 function renderTable(items) {
   if (!items || !items.length) {
-    $('logBody').innerHTML = '<tr><td colspan="10" class="empty">没有匹配的调用记录</td></tr>';
+    $('logBody').innerHTML = '<tr><td colspan="12" class="empty">没有匹配的调用记录</td></tr>';
     return;
   }
   $('logBody').innerHTML = items.map(e => {
     const chLabel = e.channel_id ? esc(e.channel_id) + (e.channel_name ? ' <span class="muted">' + esc(e.channel_name) + '</span>' : '') : '<span class="muted">-</span>';
     const note = resultNote(e);
     const retry = e.attempts > 1 ? '<span class="pill warn">第' + e.attempts + '次</span>' : '';
+    const uaShort = e.user_agent ? esc(e.user_agent.slice(0, 40)) + (e.user_agent.length > 40 ? '…' : '') : '<span class="muted">-</span>';
     return '<tr>' +
       '<td class="mono nowrap" title="' + esc(fmtTime(e.time)) + '">' + fmtTimeShort(e.time) + '</td>' +
       '<td class="mono">' + esc(e.model || '-') + (e.upstream_model && e.upstream_model !== e.model ? '<div class="muted">→ ' + esc(e.upstream_model) + '</div>' : '') + '</td>' +
@@ -257,6 +259,8 @@ function renderTable(items) {
       '<td class="mono nowrap">' + fmtLatency(e.latency_ms) + '</td>' +
       '<td class="nowrap">' + (retry || '<span class="muted">1</span>') + '</td>' +
       '<td class="mono nowrap">' + fmt(e.prompt_tokens) + '/' + fmt(e.completion_tokens) + '</td>' +
+      '<td class="mono nowrap">' + esc(e.client_ip || '-') + '</td>' +
+      '<td class="mono" title="' + esc(e.user_agent || '') + '">' + uaShort + '</td>' +
       '<td>' + note + '</td>' +
       '<td class="nowrap">' +
       '<button class="mini ghost" onclick="showDetail(\'' + esc(e.request_id) + '\')">详情</button>' +
@@ -321,17 +325,26 @@ async function showDetail(requestId) {
     const rows = d.attempts || [];
     const last = rows[rows.length - 1] || {}; // 数组已按发生顺序，最后一条即最终结果
     const finalOk = last.status >= 200 && last.status < 400;
+    // UA 可能很长：卡片里截断显示，悬停看全文（第三列是 title 提示）
+    const uaFull = d.user_agent || '';
+    const uaShow = uaFull.length > 48 ? uaFull.slice(0, 48) + '…' : uaFull;
     const sum = [
-      ['结果', finalOk ? '成功' : '失败'],
-      ['总耗时', fmtLatency(s.avg_latency_ms)],
-      ['尝试', rows.length + ' 次' + (rows.length > 1 ? '（故障转移）' : '')],
-      ['Token', (last.prompt_tokens || last.completion_tokens) ? fmt(last.prompt_tokens) + ' 入 / ' + fmt(last.completion_tokens) + ' 出' : '无'],
-      ['客户端', d.client_ip || '-'],
-      ['Request ID', requestId]
+      ['结果', finalOk ? '成功' : '失败', ''],
+      ['总耗时', fmtLatency(s.avg_latency_ms), ''],
+      ['尝试', rows.length + ' 次' + (rows.length > 1 ? '（故障转移）' : ''), ''],
+      ['Token', (last.prompt_tokens || last.completion_tokens) ? fmt(last.prompt_tokens) + ' 入 / ' + fmt(last.completion_tokens) + ' 出' : '无', ''],
+      ['来源 IP', d.client_ip || '-', ''],
+      ['User-Agent', uaShow || '-', uaFull],
+      ['Request ID', requestId, '']
     ];
     $('d_body').innerHTML =
       '<div class="log-sum">' + sum.map(function (x) {
-        return '<div class="log-sum-item"><div class="k">' + x[0] + '</div><div class="v">' + esc(x[1]) + '</div></div>';
+        const isId = x[0] === 'Request ID';
+        const style = isId ? ' style="grid-column:1/-1"' : '';
+        const cls = 'v' + (isId ? ' mono' : '');
+        const tip = x[2] ? ' title="' + esc(x[2]) + '"' : '';
+        return '<div class="log-sum-item"' + style + '><div class="k">' + x[0] +
+          '</div><div class="' + cls + '"' + tip + '>' + esc(x[1]) + '</div></div>';
       }).join('') + '</div>' +
       '<div class="log-sub">调用链路（按发生顺序）</div>' +
       (attempts || '<div class="muted">无记录</div>');

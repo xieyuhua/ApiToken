@@ -2,6 +2,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -226,7 +227,7 @@ func (h *Handler) BuildRequestOpts(ctx context.Context, cand model.Candidate, pa
 	}
 	target := JoinURL(ch.BaseURL, chatPath)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(string(raw)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(raw))
 	if err != nil {
 		return nil, err
 	}

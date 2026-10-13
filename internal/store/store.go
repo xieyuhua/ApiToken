@@ -40,10 +40,10 @@ type Store struct {
 
 	// 统计持久化：usage / totals / 渠道 Stats 定时落盘到 stats.json，
 	// 重启后恢复，避免「一重启用量数据全清零」。除非用户手动清理，否则一直保留。
-	statsFile   string
-	statsSaveMu sync.Mutex
-	statsDirty  atomic.Bool
-	statsStop   chan struct{}
+	statsFile     string
+	statsSaveMu   sync.Mutex
+	statsDirty    atomic.Bool
+	statsStop     chan struct{}
 	statsStopOnce sync.Once
 
 	usage  map[string]*model.ModelUsage
@@ -76,9 +76,9 @@ type persisted struct {
 // New 创建 Store，优先从数据文件恢复，其次使用配置文件内容。
 func New(cfg *config.Config, log *slog.Logger) (*Store, error) {
 	s := &Store{
-		cfg:      cfg,
-		log:      log,
-		dataFile: cfg.DataFile(),
+		cfg:           cfg,
+		log:           log,
+		dataFile:      cfg.DataFile(),
 		channels:      map[string]*model.Channel{},
 		health:        map[string]HealthInfo{},
 		usage:         map[string]*model.ModelUsage{},
@@ -209,7 +209,7 @@ func (s *Store) GetChannel(id string) (model.Channel, bool) {
 func (s *Store) Upsert(ch model.Channel) (model.Channel, error) {
 	s.mu.Lock()
 	if ch.ID == "" {
-		ch.ID = genID(ch.Name)
+		ch.ID = model.NewChannelID(ch.Name)
 	}
 	if _, ok := s.channels[ch.ID]; !ok {
 		ch.CreatedAt = time.Now()
@@ -456,6 +456,9 @@ func (s *Store) candidateSnapshot(name string) (list []model.Candidate, fixed bo
 	return list, false
 }
 
+// maxChannelWeight 加权轮询时单个渠道的最大展开倍数（权重再大也按 20 计）。
+const maxChannelWeight = 20
+
 // orderCandidates 按配置策略排序候选。
 // 必须在锁外调用（内部会取轮询游标与随机源）。
 func (s *Store) orderCandidates(name string, list []model.Candidate) []model.Candidate {
@@ -497,14 +500,14 @@ func (s *Store) rotate(name string, list []model.Candidate, strategy string) []m
 		return out
 	}
 	// 加权展开：权重越大出现次数越多
-	seq := make([]model.Candidate, 0, len(list)*4)
+	seq := make([]model.Candidate, 0, len(list)*maxChannelWeight)
 	for _, c := range list {
 		w := c.Channel.Weight
 		if w <= 0 {
 			w = 1
 		}
-		if w > 20 {
-			w = 20
+		if w > maxChannelWeight {
+			w = maxChannelWeight
 		}
 		for i := 0; i < w; i++ {
 			seq = append(seq, c)
@@ -646,9 +649,16 @@ func (s *Store) RecordChannelAttempt(channelID string, ok bool, latency time.Dur
 	if !exists {
 		return
 	}
+	s.recordChannelStatsLocked(ch, ok, latency, prompt, completion, errMsg, time.Now())
+	s.markStatsDirty()
+}
+
+// recordChannelStatsLocked 累加渠道维度统计并维护冷却状态。
+// 调用方必须持有 s.mu。
+func (s *Store) recordChannelStatsLocked(ch *model.Channel, ok bool, latency time.Duration, prompt, completion int64, errMsg string, now time.Time) {
 	ch.Stats.Requests++
 	ch.Stats.TotalLatencyMS += latency.Milliseconds()
-	ch.Stats.LastUsed = time.Now()
+	ch.Stats.LastUsed = now
 	if ok {
 		ch.Stats.Success++
 		ch.Stats.PromptTokens += prompt
@@ -662,11 +672,10 @@ func (s *Store) RecordChannelAttempt(channelID string, ok bool, latency time.Dur
 	// 失败进入冷却：该渠道在冷却时长内不再进入候选列表，
 	// 避免「刚失败，下一轮会话又第一个打到它」。
 	if ok {
-		delete(s.cooldownUntil, channelID)
+		delete(s.cooldownUntil, ch.ID)
 	} else if cd := s.cooldownSetting(); cd > 0 {
-		s.markCooldown(channelID, time.Now().Add(cd))
+		s.markCooldown(ch.ID, now.Add(cd))
 	}
-	s.markStatsDirty()
 }
 
 // RecordFinish 一次性记录一次请求的最终结果与该次尝试的渠道统计。
@@ -681,27 +690,8 @@ func (s *Store) RecordFinish(channelID, modelName string, ok bool, total, attemp
 
 	// 渠道维度
 	if ch, exists := s.channels[channelID]; exists {
-		ch.Stats.Requests++
-		ch.Stats.TotalLatencyMS += attempt.Milliseconds()
-		ch.Stats.LastUsed = now
-		if ok {
-			ch.Stats.Success++
-			ch.Stats.PromptTokens += prompt
-			ch.Stats.CompletionTokens += completion
-		} else {
-			ch.Stats.Failed++
-			if errMsg != "" {
-				ch.Stats.LastError = errMsg
-			}
-		}
+		s.recordChannelStatsLocked(ch, ok, attempt, prompt, completion, errMsg, now)
 	}
-	// 成功即解除冷却（手动测试/连通性通过同样走这里时同理）
-	if ok {
-		delete(s.cooldownUntil, channelID)
-	} else if cd := s.cooldownSetting(); cd > 0 {
-		s.markCooldown(channelID, now.Add(cd))
-	}
-	s.markStatsDirty()
 
 	// 模型 + 全局维度
 	u := s.usage[modelName]
@@ -817,14 +807,6 @@ func (s *Store) SetHealth(id string, h HealthInfo) {
 	s.mu.Unlock()
 }
 
-// Health 读取渠道健康状态。
-func (s *Store) Health(id string) (HealthInfo, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	h, ok := s.health[id]
-	return h, ok
-}
-
 // OnRuntimeChanged 配置热更新回调（目前用于调整日志容量）。
 func (s *Store) OnRuntimeChanged(rt *config.Runtime) {
 	s.logs.SetMax(rt.KeepLogs)
@@ -849,14 +831,6 @@ func (s *Store) CloseLogs() {
 		s.sink.Close()
 	}
 	s.stopStatsFlusher()
-}
-
-// LogStats 返回日志丢弃数与已落盘数。
-func (s *Store) LogStats() (dropped, written int64) {
-	if s.sink == nil {
-		return 0, 0
-	}
-	return s.sink.Stats()
 }
 
 // Logs 读取最近 n 条访问日志.
@@ -932,27 +906,8 @@ func (s *Store) ClearLogs() int {
 	return n
 }
 
-// Strategy 返回当前路由策略。
-// 走 RT() 而非直接读字段，否则设置热更新后这里仍返回旧值。
-func (s *Store) Strategy() string { return s.cfg.RT().Strategy }
-
 // Config 返回配置。
 func (s *Store) Config() *config.Config { return s.cfg }
 
 // Uptime 运行时长。
 func (s *Store) Uptime() time.Duration { return time.Since(s.started) }
-
-func genID(name string) string {
-	base := "ch"
-	for _, r := range name {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			base += string(r)
-		} else if r >= 'A' && r <= 'Z' {
-			base += string(r + 32)
-		}
-	}
-	if len(base) <= 2 {
-		base = "channel"
-	}
-	return fmt.Sprintf("%s-%d", base, time.Now().UnixNano()%100000)
-}

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/demo1/apitoken/internal/config"
 )
 
 // relayResult 单次上游调用的结果（用于日志记录）。
@@ -15,12 +17,12 @@ type relayResult struct {
 	Endpoint      string // 实际请求的上游地址
 }
 
-// payloadLimit 摘要长度上限。
+// payloadLimit 摘要长度上限。统一走 RT()，设置页热更新后立即生效。
 func (h *Handler) payloadLimit() int {
-	if h.cfg.Logging.PayloadLimit <= 0 {
-		return 2000
+	if n := h.cfg.RT().PayloadLimit; n > 0 {
+		return n
 	}
-	return h.cfg.RT().PayloadLimit
+	return config.DefaultPayloadLimit
 }
 
 // recordPayload 是否记录请求/响应摘要。

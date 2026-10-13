@@ -70,7 +70,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDOf(r)
 	entry := model.LogEntry{
 		Time: start, RequestID: reqID, Method: r.Method, Path: r.URL.Path,
-		ClientIP: clientIP(r),
+		ClientIP: clientIP(r), UserAgent: logUA(r),
 	}
 
 	if r.Method != http.MethodPost {
@@ -284,7 +284,8 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, reqID string, 
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
-	req, err := h.BuildRequestOpts(ctx, cand, payload, stream, withClientUA(opts, r))
+	// serve 已注入客户端 User-Agent，这里直接使用
+	req, err := h.BuildRequestOpts(ctx, cand, payload, stream, opts)
 	if err != nil {
 		return res, &upstreamError{Transport: err, ChannelID: cand.ID}
 	}
@@ -416,6 +417,8 @@ func (h *Handler) relayStream(w http.ResponseWriter, resp *http.Response, cand m
 	}
 	// 收尾：OpenAI 直通为空；Anthropic 需补 content_block_stop + message_delta + message_stop
 	write(writer.End())
+	// 触发 Dropped() 收集：Anthropic 流式被丢弃的字段会并入 responder，供日志 protocol_convert 记录
+	writer.Dropped()
 	// 转换器可能自带用量（Anthropic 从末尾数据块解析）
 	if u := writer.Usage(); u.Total() > 0 {
 		res.Usage = u
@@ -456,7 +459,7 @@ func (h *Handler) finish(e model.LogEntry) {
 			"channel", e.ChannelID, "stream", e.Stream,
 			"status", e.Status, "latency_ms", e.LatencyMS, "attempts", e.Attempts,
 			"prompt_tokens", e.PromptTokens, "completion_tokens", e.CompletionTokens,
-			"ip", e.ClientIP, "err", e.Error)
+			"ip", e.ClientIP, "ua", e.UserAgent, "err", e.Error)
 	}
 }
 
@@ -497,4 +500,16 @@ func clientIP(r *http.Request) string {
 		host = host[:i]
 	}
 	return host
+}
+
+// logUAMaxRunes 日志里 User-Agent 的最大长度（按 rune 计），超长截断防止脏数据撑爆日志。
+const logUAMaxRunes = 120
+
+// logUA 提取用于日志记录的客户端 User-Agent：清洗控制字符并限长。
+func logUA(r *http.Request) string {
+	ua := sanitizeUA(r.Header.Get("User-Agent"))
+	if rs := []rune(ua); len(rs) > logUAMaxRunes {
+		ua = string(rs[:logUAMaxRunes]) + "…"
+	}
+	return ua
 }

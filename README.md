@@ -9,6 +9,23 @@
 - 可观测：token 用量、成功率、平均延迟、最近 500 条访问日志
 - 鉴权：客户端 Key（`Authorization: Bearer`）与管理令牌分离
 
+**目录**
+
+| 章节 | 内容 |
+| --- | --- |
+| [1. 快速开始](#1-快速开始) | 构建、启动、各入口地址 |
+| [2. 接入平台](#2-接入平台填-base-url-即可) | 各平台 Base URL / 鉴权 / 模型名速查 |
+| [3. 添加渠道](#3-添加渠道web-界面) | Web 界面与命令行两种添加方式 |
+| [4. 调用方式](#4-调用方式) | curl / OpenAI SDK（Python、Go）/ 第三方客户端 |
+| [5. 路由与故障转移](#5-路由与故障转移) | 显式路由、自动路由、重试与冷却 |
+| [6. 管理 API](#6-管理-api) | `/admin/*` 接口一览 |
+| [7. 配置项](#7-配置项) | 全部配置项与默认值 |
+| [8. 常见问题](#8-常见问题) | 404 / 401 / 模型找不到 / 主备 / 密钥安全 |
+| [9. Web 控制台](#9-web-控制台页面) | 日志、对话、自检、设置、主题、Anthropic 入口 |
+| [10. 项目结构](#10-项目结构) | 目录说明、协议转换、日志管道、并发设计 |
+| [11. 开发与测试](#11-开发与测试) | Makefile 命令与测试分层 |
+| [12. 流程图](#12-流程图) | 启动 / 数据面 / 管理面 / 后台任务（Mermaid） |
+
 ---
 
 ## 1. 快速开始
@@ -293,7 +310,6 @@ routes:
 | `upstream.default_timeout` | `120s` | 渠道未单独指定 `timeout_sec` 时的超时 |
 | `upstream.connect_timeout` | `10s` | 上游连接超时 |
 | `upstream.keep_alive` | `30s` | 上游连接池 keep-alive |
-| `upstream.max_idle_conns` | `200` | 上游最大空闲连接数 |
 | `upstream.proxy_url` | 空 | 空=跟随 `HTTP_PROXY/HTTPS_PROXY`；`none`=强制直连；也可填代理地址（热更新） |
 | `ui.theme` | `auto` | 新设备默认主题：`auto`/`dark`/`light`（热更新） |
 
@@ -337,9 +353,10 @@ Key 无效或未生效。DeepSeek、商汤、腾讯 WorkBuddy 的 Key 各自独�
 
 访问 http://127.0.0.1:8080/logs ：
 
-- 统计卡：命中条数、成功率、故障转移次数、Token 用量、平均/P95 延迟
-- 明细表：时间、模型（含映射后的上游模型）、渠道/平台、流式/普通、状态码、耗时、尝试次数、Token、错误或响应摘要
-- 筛选：模型、渠道、成功/失败/具体状态码、流式、关键字（Request ID / 错误 / 内容）
+- 统计卡：命中条数、成功率、故障转移次数、Token 用量（≥100 万显示为 M、≥10 亿显示为 B）、平均/P95 延迟
+- 明细表：时间、模型（含映射后的上游模型）、渠道/平台、流式/普通、状态码、耗时、尝试次数、Token、
+  **来源 IP**（优先取 `X-Forwarded-For` 首跳）与 **User-Agent**（列内截断显示、悬停看全文）、错误或响应摘要
+- 筛选：模型、渠道、成功/失败/具体状态码、流式、关键字（Request ID / 错误 / 内容 / 来源 IP / User-Agent）
 - 详情弹窗：按 Request ID 展示**每一次上游尝试**（渠道、端点、状态、耗时、错误、请求/响应摘要），便于复盘故障转移
 - 聚合分析：按模型 / 渠道 / 状态码的次数与平均延迟、高频错误 Top 10
 - 导出与清空：`GET /admin/logs/export?format=csv|json`、`DELETE /admin/logs`
@@ -358,9 +375,12 @@ Key 无效或未生效。DeepSeek、商汤、腾讯 WorkBuddy 的 Key 各自独�
 访问 http://127.0.0.1:8080/chat，用网关密钥（`security.client_keys`）即可与网关对话：
 
 - 左侧填网关地址与密钥 → 点「拉取模型」，下拉里会显示每个模型对应的可用渠道
+- **连接历史**：连接成功会自动记入「历史连接」下拉（按地址去重、最近在前、最多 20 条，密钥随地址一起保存），
+  选中即回填并自动拉取模型；「保存」按钮手动保存当前连接，「删除」移除选中的历史条目。
+  历史只存本机浏览器 localStorage，不写入服务端
 - 模型下拉支持关键词搜索（可按模型名，也可按渠道名反查该渠道的模型）
 - 支持流式（SSE）与非流式、系统提示词、温度、max_tokens、三个快捷测试提示词
-- 每条回复下方展示：命中的渠道、映射后的上游模型、token 用量、首字延迟与总耗时、request_id
+- 每条回复下方展示：命中的渠道、映射后的上游模型、token 用量（≥100 万显示为 M、≥10 亿显示为 B，如 `2.35M`）、首字延迟与总耗时、request_id
 - 报错时直接显示上游返回的原始错误（如 Key 失效、限流、模型不存在），便于定位
 - 连接信息只存在浏览器 localStorage，不写入服务端
 
@@ -458,7 +478,7 @@ OpenAI 兼容端点，响应再转回 Anthropic Messages（含 SSE 事件序列�
 **严格校验**：不支持的字段（如 `document` 块、`server_tool_use`、`mcp_servers`）会明确返回 400
 并说明原因，而不是静默丢弃——否则调用方会误以为「thinking 已开启」「图片已传入」。
 确实无法映射但无副作用的字段（如 `metadata`）会被丢弃，并记录在响应头
-`X-Gateway-Convert-Ms` 与日志的 `protocol_convert` 里。
+`X-Gateway-Convert-Ms` 与日志的 `protocol_convert` 里（流式与非流式都会记录）。
 
 两个已知限制：
 
@@ -726,22 +746,22 @@ Go 测试里还有一批对页面/脚本内容的**字符串断言**（例如「
 ```mermaid
 flowchart TD
     A["main() · cmd/gateway/main.go:21"] --> B["解析参数 -config / -addr / -version"]
-    B --> C["config.Load: yaml 解析 → applyDefaults → validate → ApplyRuntime<br/>config/config.go:185"]
-    C --> D["store.New: 读 data/gateway.json<br/>空则用 config 播种并落盘 store/store.go:58"]
+    B --> C["config.Load: yaml 解析 → applyDefaults → validate → ApplyRuntime<br/>config/config.go:203"]
+    C --> D["store.New: 读 data/gateway.json<br/>空则用 config 播种并落盘 store/store.go:77"]
     D --> E["构造 http.Server: 读头 15s / 空闲 120s"]
     E --> F["gateway.New → proxy.Handler + admin.New + webui<br/>注册全部路由 gateway/gateway.go:44"]
     F --> G["中间件链: recover → requestID → securityHeaders → CORS → mux"]
     G --> H["go ListenAndServe，打印版本/地址/UI/API/渠道数"]
     H --> I["监听 SIGINT / SIGTERM → Shutdown 10s"]
 
-    C -.->|"yaml.Node 增量合并，保留注释"| C1["config.Save config/config.go:363"]
+    C -.->|"yaml.Node 增量合并，保留注释"| C1["config.Save config/config.go:417"]
     D -.->|"tmp 文件 + os.Rename 原子写 0600"| D1["data/gateway.json"]
 ```
 
 关键点：
-- `validate()` 会校验渠道 id 唯一、`base_url` 非空，并 `MkdirAll(data_dir)`（`config/config.go:326`）；
+- `validate()` 会校验渠道 id 唯一、`base_url` 非空，并 `MkdirAll(data_dir)`（`config/config.go:380`）；
 - `store.load()` 若发现配置里新增了渠道，只补进内存，**不覆盖**已在 `gateway.json` 里的改动；
-- 全局唯一的后台协程就是 `main.go:61` 的 `ListenAndServe`。
+- 全局唯一的后台协程就是 `main.go:71` 的 `ListenAndServe`。
 
 ### 12.2 数据面主链路
 
@@ -752,12 +772,12 @@ flowchart TD
     A["客户端请求"] --> B{"clientAuth: Bearer 或 X-Api-Key<br/>常量时间比较 gateway/gateway.go:104"}
     B -->|"不匹配"| B1["401"]
     B -->|"通过（client_keys 为空则放行）"| C{"入站协议"}
-    C -->|OpenAI| D["解析 JSON，取 model / stream<br/>proxy/chat.go:81"]
+    C -->|OpenAI| D["解析 JSON，取 model / stream<br/>proxy/chat.go:87"]
     C -->|Anthropic| E["translate.RequestToOpenAI 严格校验<br/>proxy/messages.go:40"]
     E -->|"不支持的字段直接 400"| E1["400"]
     E --> D
 
-    D --> F["store.Candidates(model) store/store.go:292"]
+    D --> F["store.Candidates(model) store/store.go:328"]
     F --> G{"路由策略"}
     G -->|"优先级 1 显式 route 命中"| H["严格按声明顺序返回"]
     G -->|"优先级 2 自动路由"| I["Channel.Supports 过滤<br/>models / alias / 空 = 放通全部"]
@@ -765,7 +785,7 @@ flowchart TD
     H --> K["候选渠道列表"]
     J --> K
 
-    K --> L["serve 故障转移循环<br/>次数 = min MaxAttempts, 候选数 proxy/chat.go:139"]
+    K --> L["serve 故障转移循环<br/>次数 = min MaxAttempts, 候选数 proxy/chat.go:112"]
     L --> M["attempt: timeoutFor 定超时"]
     M --> N["BuildRequestOpts: 覆盖 model、注入 extra_params、<br/>流式追加 stream_options.include_usage"]
     N --> O["applyAuth: bearer / header / query，再叠加 extra_headers<br/>（已透传客户端 User-Agent）"]
@@ -786,7 +806,7 @@ flowchart TD
 
 关键点：
 - **超时优先级**：`channel.timeout_sec` → `stream_timeout` → `request_timeout` → `default_timeout` → 120s
-  （`proxy/upstream.go:257`）；
+  （`proxy/upstream.go:310`）；
 - **协议差异全部收敛到 `responder` 接口**（`proxy/relay.go:18`）：入站是 `openAIResponder` 或
   `anthropicResponder`，Anthropic 侧额外强制 `ForceUsage:true`，出站流式由 `Begin/Line/End` 重放事件序列；
 - **每次上游尝试单独落一条日志**（同 `request_id`），因此 `/logs` 能还原完整故障转移链，最后一条即最终结果；
@@ -816,7 +836,7 @@ flowchart TD
 
     C -->|路由 upsert / delete| G["按对外模型名 upsert：同名 = 更新，改名 = 新增"]
 
-    C -->|设置热更新| H["updateSettings 校验 admin/settings.go:106"]
+    C -->|设置热更新| H["updateSettings 校验 admin/settings.go:111"]
     H --> H1["cfg.ApplyRuntime 原子替换，保存即生效"]
     H1 --> H2["store.OnRuntimeChanged 调整日志容量"]
     H2 --> H3["config.Save 写回 config.yaml"]
@@ -828,23 +848,23 @@ flowchart TD
 
 关键点：
 - 渠道与路由的改动**只落 `data/gateway.json`**，配置文件的 `channels` / `routes` 只在首次播种时作为初始值；
-- 设置项热更新走 `atomic.Pointer`（`config/config.go:170`），内存态立即生效，同时回写 YAML；
+- 设置项热更新走 `atomic.Pointer`（`config/config.go:112`），内存态立即生效，同时回写 YAML；
 - 诊断的并发探测是**请求内**的，用信号量限流，不是后台定时任务。
 
 ### 12.4 后台任务与隐式状态
 
 | 项 | 结论 |
 | --- | --- |
-| 定时任务 | **无**（全仓库没有 ticker / cron / 定时循环） |
-| 常驻协程 | 两个：`main.go` 的 `ListenAndServe`、日志管道的批量落盘协程（内部有 200ms flush ticker） |
+| 定时任务 | 无 cron / 业务定时循环；仅有两个落盘用的后台 ticker：日志攒批 flush（200ms，`store/logsink.go`）与统计快照落盘（3s，`store/statsfile.go`） |
+| 常驻协程 | 三个：`main.go` 的 `ListenAndServe`、日志管道的批量落盘协程、统计落盘协程（各自随进程退出优雅停止） |
 | 请求内并发 | 仅诊断的 `probeChannels`（sem=5）与 `probeNetwork`（sem=6）两处 |
 | 队列 / 显式状态机 | 日志管道是唯一的生产消费队列（容量 4096，满则丢弃并计数） |
 
 三处可视为「隐式状态」的地方，画状态图时可参考：
 
-- **渠道健康状态**：`healthy` / `unhealthy` / 未测（空）。写入点只有 `admin/handler.go:319`
-  的连通性测试与 `admin/diagnostics.go:339` 的渠道体检；
-- **诊断结论等级**：`pass` / `warn` / `fail` / `skip`，汇总于 `admin/diagnostics.go:448`；
+- **渠道健康状态**：`healthy` / `unhealthy` / 未测（空）。写入点只有 `admin/handler.go:315`
+  的连通性测试与 `admin/diagnostics.go:338` 的渠道体检；
+- **诊断结论等级**：`pass` / `warn` / `fail` / `skip`，汇总于 `admin/diagnostics.go:84` 的自检概览；
 - **故障转移链**：一次请求产生 N 条同 `request_id` 的日志，`store.RequestLogs` 反转成时间正序，
   最后一条为最终结果。
 

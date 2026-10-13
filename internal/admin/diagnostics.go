@@ -15,7 +15,6 @@ import (
 
 	"github.com/demo1/apitoken/internal/model"
 	"github.com/demo1/apitoken/internal/proxy"
-	"github.com/demo1/apitoken/internal/store"
 )
 
 // 诊断结论等级。
@@ -149,7 +148,7 @@ func (h *Handler) buildChecks() []Check {
 	if len(rt.ClientKeys) == 0 {
 		add("config", "客户端密钥", LevelWarn, "未配置 client_keys，知道地址即可调用网关", "在 config.yaml 的 security.client_keys 中配置至少一个密钥")
 	} else {
-		add("config", "客户端密钥", LevelPass, fmt.Sprintf("已配置 %d 个", len(cfg.Security.ClientKeys)), "")
+		add("config", "客户端密钥", LevelPass, fmt.Sprintf("已配置 %d 个", len(rt.ClientKeys)), "")
 	}
 	if rt.AdminToken == "" {
 		add("config", "管理令牌", LevelWarn, "未配置 admin_token，管理接口无鉴权", "配置 security.admin_token 保护 /admin/*")
@@ -336,15 +335,7 @@ func (h *Handler) probeChannels(ctx context.Context) []ChannelProbe {
 				LatencyMS: res.LatencyMS, Model: res.Model, Reply: res.Reply, Error: res.Error,
 				Models: len(c.Models),
 			}
-			info := store.HealthInfo{CheckedAt: time.Now(), LatencyMS: res.LatencyMS}
-			if res.OK {
-				info.Status = "healthy"
-				info.Detail = res.Reply
-			} else {
-				info.Status = "unhealthy"
-				info.Error = res.Error
-			}
-			h.store.SetHealth(c.ID, info)
+			h.store.SetHealth(c.ID, healthInfoFromProbe(res))
 		}(i, c)
 	}
 	wg.Wait()
@@ -392,11 +383,13 @@ func (h *Handler) probeNetwork(ctx context.Context) []NetCheck {
 
 func checkHost(ctx context.Context, host, port string) NetCheck {
 	res := NetCheck{Host: host, Level: LevelFail}
-	if addrs, err := net.DefaultResolver.LookupHost(ctx, host); err == nil && len(addrs) > 0 {
+	if addrs, err := net.DefaultResolver.LookupHost(ctx, host); err != nil {
+		res.Error = "DNS 解析失败: " + err.Error()
+	} else if len(addrs) == 0 {
+		res.Error = "DNS 未返回任何地址"
+	} else {
 		res.DNS = true
 		res.Addrs = addrs
-	} else {
-		res.Error = "DNS 解析失败: " + err.Error()
 	}
 
 	addr := net.JoinHostPort(host, port)

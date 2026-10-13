@@ -5,6 +5,8 @@
  *   1. Combo 组件：过滤 / 高亮 / 分组 / 截断提示 / 键盘导航 / 卸载
  *   2. 自由输入（对外模型名可自定义）：零命中采纳、有命中不误改
  *   3. 路由弹窗：编辑保存的是更新而非新增、改名需确认、标题随状态变化
+ *   4. 数字格式化：Token 用量 ≥100 万显示为 M、≥10 亿显示为 B
+ *   5. 对话页连接历史：保存去重、切换回填、删除
  *
  * 运行：node tools/webui_test.js
  */
@@ -116,7 +118,13 @@ function installDom() {
   };
   global.window = global;
   global.location = { origin: 'http://127.0.0.1:8080' };
-  global.localStorage = { getItem: () => '', setItem: () => {} };
+  // 内存版 localStorage：默认仍返回 ''，写入后可在测试里读回
+  const mem = {};
+  global.localStorage = {
+    getItem: k => (k in mem ? mem[k] : ''),
+    setItem: (k, v) => { mem[k] = String(v); },
+    removeItem: k => { delete mem[k]; },
+  };
   global.setInterval = () => 0;
   global.setTimeout = () => 0;
   global.clearTimeout = () => {};
@@ -398,6 +406,91 @@ function testStatic() {
   assert(/allowFree: true/.test(idx), '对外模型名启用自由输入');
   assert((idx.match(/allowFree: true/g) || []).length >= 3, '路由弹窗内 3 个可输入下拉都启用自由输入');
   assert(/id="rtDlgHead"/.test(idx) && /routeEditingModel/.test(idx), '更新/新建语义已区分');
+
+  // 对话页连接历史
+  assert(/id="connSel"/.test(chatHtml), 'chat 页提供历史连接下拉');
+  assert(/function upsertConn\(/.test(chatJs) && /function removeConn\(/.test(chatJs) &&
+    /function renderConns\(/.test(chatJs), 'chat.js 实现连接历史管理');
+  assert(/apitoken_conns/.test(chatJs), '连接历史持久化到 localStorage（apitoken_conns）');
+
+  // 调用日志：来源 IP / User-Agent 列
+  const logsHtml = read('internal/webui/logs.html');
+  assert(/来源 IP/.test(logsHtml) && /<th>User-Agent<\/th>/.test(logsHtml),
+    '调用日志表含来源 IP / User-Agent 列');
+  assert(/e\.client_ip/.test(logsHtml) && /e\.user_agent/.test(logsHtml),
+    '日志列表行渲染 IP 与 UA（UA 截断 + 悬停全文）');
+  assert(/d\.user_agent/.test(logsHtml), '调用详情展示 User-Agent');
+  // 详情弹窗：复制按钮参数必须 esc，否则回复里的双引号会破坏 onclick 属性、渲染出乱码
+  assert(/copyText\(' \+ esc\(JSON\.stringify\(text\)\)/.test(logsHtml),
+    '详情弹窗复制按钮参数经 esc 转义');
+  assert(/grid-column:1\/-1/.test(logsHtml), 'Request ID 在详情汇总中独占一行');
+}
+
+/* ------------------------------------------------------------------ *
+ * 4. 数字格式化：Token 用量 ≥100 万显示为 M、≥10 亿显示为 B
+ * ------------------------------------------------------------------ */
+function testFmt() {
+  section('数字格式化（M/B）');
+  (0, eval)(read('internal/webui/static/app.js') +
+    '\n;window.__fmt = fmt; window.__esc = esc;');
+  const fmt = window.__fmt;
+  assert(fmt(0) === '0', 'fmt(0) = 0');
+  assert(fmt(999) === '999', 'fmt(999) = 999');
+  assert(fmt(123456) === '123,456', 'fmt(123456) 千分位');
+  assert(fmt(1234567) === '1.23M', 'fmt(1234567) = 1.23M');
+  assert(fmt(2e6) === '2M', 'fmt(2e6) = 2M（去尾零）');
+  assert(fmt(2.5e9) === '2.5B', 'fmt(2.5e9) = 2.5B');
+  assert(fmt(null) === '0', 'fmt(null) = 0');
+
+  // 详情弹窗复制按钮：JSON.stringify 的引号必须经 esc 转义，
+  // 否则回复内容含双引号时会截断 onclick 属性、渲染出乱码（回归）
+  const esc = window.__esc;
+  const text = '他说"你好" <b> & 100% \\ done';
+  const btn = '<button onclick="copyText(' + esc(JSON.stringify(text)) + ')">复制</button>';
+  const m = btn.match(/^<button onclick="copyText\(([\s\S]*)\)">复制<\/button>$/);
+  const decoded = m && m[1].replace(/&quot;/g, '"').replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  assert(!!m && JSON.parse(decoded) === text, '含引号的回复不再破坏复制按钮的 onclick 结构');
+}
+
+/* ------------------------------------------------------------------ *
+ * 5. 对话页连接历史：保存去重、下拉回填、删除
+ * ------------------------------------------------------------------ */
+function testChatConns() {
+  section('对话页连接历史');
+  // chat.js 依赖 app.js 的 esc（不同 eval 间 const 不共享，这里显式注入）
+  (0, eval)('var esc = window.__esc; var toast = function(){};' +
+    read('internal/webui/static/chat.js'));
+  const conns = () => JSON.parse(localStorage.getItem('apitoken_conns') || '[]');
+
+  // 保存两条连接
+  el('base').value = 'http://a.example.com:8080';
+  el('key').value = 'sk-a';
+  window.saveConn();
+  el('base').value = 'http://b.example.com';
+  el('key').value = 'sk-b';
+  window.saveConn();
+  assert(conns().length === 2 && conns()[0].base === 'http://b.example.com',
+    '最近连接的排在最前');
+  assert(el('connSel').innerHTML.indexOf('a.example.com') !== -1, '下拉渲染出历史连接');
+
+  // 同一地址再次保存 = 去重更新，不会重复条目
+  window.saveConn();
+  assert(conns().length === 2, '按地址去重，不重复条目');
+  assert(conns()[0].key === 'sk-b', '重复保存会更新密钥');
+
+  // 选中历史 → 回填输入框并设为当前连接
+  el('base').value = '';
+  el('key').value = '';
+  window.pickConn('http://a.example.com:8080');
+  assert(el('base').value === 'http://a.example.com:8080' && el('key').value === 'sk-a',
+    '选中历史连接回填地址与密钥');
+
+  // 删除
+  el('connSel').value = 'http://a.example.com:8080';
+  window.delConn();
+  assert(conns().length === 1 && conns()[0].base === 'http://b.example.com',
+    '删除选中历史连接');
 }
 
 /* ------------------------------------------------------------------ */
@@ -407,6 +500,8 @@ function testStatic() {
   testCombo();
   await testRouteDialog();
   testStatic();
+  testFmt();
+  testChatConns();
   console.log('\n通过 ' + passed + ' 项，失败 ' + failed + ' 项');
   process.exit(failed ? 1 : 0);
 })();

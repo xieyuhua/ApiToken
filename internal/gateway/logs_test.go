@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -402,4 +403,74 @@ func firstLogItems(t *testing.T, h http.Handler, n int) []model.LogEntry {
 		t.Fatalf("解析日志失败: %v", err)
 	}
 	return page.Items
+}
+
+// TestLogRecordsClientIPAndUserAgent 校验调用日志记录来源 IP 与 User-Agent，
+// 且详情接口、关键字搜索、CSV 导出都带这两个字段。
+func TestLogRecordsClientIPAndUserAgent(t *testing.T) {
+	mock := newMock(false)
+	defer mock.srv.Close()
+	h := newTestGateway(t, []model.Channel{{
+		ID: "c1", Name: "正常", BaseURL: mock.srv.URL + "/v1", APIKey: "k",
+		Models: []string{"mock-chat"}, Priority: 1, Weight: 1, Enabled: true,
+	}})
+
+	// 带 User-Agent 与 X-Forwarded-For 发起一次调用
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"mock-chat","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer sk-test")
+	req.Header.Set("User-Agent", "OpenAI/Python 1.0")
+	req.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("请求失败: %d %s", rec.Code, rec.Body.String())
+	}
+
+	items := firstLogItems(t, h, 1)
+	if len(items) != 1 {
+		t.Fatalf("应有 1 条日志，实际 %d", len(items))
+	}
+	e := items[0]
+	if e.ClientIP != "203.0.113.7" {
+		t.Fatalf("ClientIP = %q，期望取 X-Forwarded-For 首跳 203.0.113.7", e.ClientIP)
+	}
+	if e.UserAgent != "OpenAI/Python 1.0" {
+		t.Fatalf("UserAgent = %q", e.UserAgent)
+	}
+
+	// 详情接口返回同样字段
+	rec = adminDo(t, h, "adm-test", http.MethodGet, "/admin/logs/"+e.RequestID, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("详情接口异常: %d", rec.Code)
+	}
+	var detail struct {
+		ClientIP  string `json:"client_ip"`
+		UserAgent string `json:"user_agent"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("解析详情失败: %v", err)
+	}
+	if detail.ClientIP != "203.0.113.7" || detail.UserAgent != "OpenAI/Python 1.0" {
+		t.Fatalf("详情字段不符: %+v", detail)
+	}
+
+	// 关键字可按 User-Agent 搜索
+	rec = adminDo(t, h, "adm-test", http.MethodGet, "/admin/logs?keyword="+url.QueryEscape("openai/python"), "")
+	var hit struct {
+		Total int `json:"total"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &hit); err != nil {
+		t.Fatalf("解析搜索失败: %v", err)
+	}
+	if hit.Total != 1 {
+		t.Fatalf("按 User-Agent 搜索应命中 1 条，实际 %d", hit.Total)
+	}
+
+	// CSV 导出带 user_agent 列
+	rec = adminDo(t, h, "adm-test", http.MethodGet, "/admin/logs/export?format=csv", "")
+	head, _, _ := strings.Cut(rec.Body.String(), "\n")
+	if !strings.Contains(head, "client_ip") || !strings.Contains(head, "user_agent") {
+		t.Fatalf("CSV 表头缺少来源字段: %s", head)
+	}
 }

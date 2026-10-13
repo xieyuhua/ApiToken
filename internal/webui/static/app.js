@@ -102,7 +102,13 @@ function toast(msg, isErr) {
   toastTimer = setTimeout(() => { t.style.display = 'none'; }, 3600);
 }
 
-const fmt = n => (n ?? 0).toLocaleString();
+// 数字格式化：≥100 万显示为 M、≥10 亿显示为 B（如 2.35M、1.2B），其余按千分位
+const fmt = n => {
+  n = n ?? 0;
+  if (n >= 1e9) return parseFloat((n / 1e9).toFixed(2)) + 'B';
+  if (n >= 1e6) return parseFloat((n / 1e6).toFixed(2)) + 'M';
+  return n.toLocaleString();
+};
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
 
 function fmtTime(t) {

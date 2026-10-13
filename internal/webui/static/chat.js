@@ -37,9 +37,70 @@
     $('status').innerHTML = '<span class="dot ' + kind + '"></span>' + esc(text);
   }
 
+  /* ===== 连接配置历史（仅存浏览器 localStorage，不上服务端） ===== */
+  const CONN_KEY = 'apitoken_conns';
+  const CONN_MAX = 20;
+
+  function loadConns() {
+    try {
+      const list = JSON.parse(localStorage.getItem(CONN_KEY) || '[]');
+      return Array.isArray(list) ? list : [];
+    } catch (e) { return []; }
+  }
+  function storeConns(list) {
+    localStorage.setItem(CONN_KEY, JSON.stringify(list.slice(0, CONN_MAX)));
+  }
+  /** 按地址去重保存一条连接（最近的排最前），key 随之更新 */
+  function upsertConn(b, k) {
+    if (!b) return;
+    const list = loadConns().filter(c => c.base !== b);
+    list.unshift({ base: b, key: k || '', ts: Date.now() });
+    storeConns(list);
+  }
+  function removeConn(b) {
+    storeConns(loadConns().filter(c => c.base !== b));
+  }
+  /** 下拉文案：去掉协议头，过长截断 */
+  function connLabel(b) {
+    const s = b.replace(/^https?:\/\//i, '');
+    return s.length > 32 ? s.slice(0, 32) + '…' : s;
+  }
+  function renderConns() {
+    const sel = $('connSel');
+    if (!sel) return;
+    const list = loadConns();
+    const cur = base();
+    let html = '<option value="">历史连接（' + list.length + '）</option>';
+    html += list.map(c =>
+      '<option value="' + esc(c.base) + '"' + (c.base === cur ? ' selected' : '') + '>' +
+      esc(connLabel(c.base)) + '</option>'
+    ).join('');
+    sel.innerHTML = html;
+  }
+  /** 选中历史连接：回填输入框、保存为当前连接并立即拉取模型 */
+  function pickConn(v) {
+    if (!v) return;
+    const c = loadConns().find(x => x.base === v);
+    if (!c) return;
+    $('base').value = c.base;
+    $('key').value = c.key || '';
+    saveConn();
+    loadModels();
+  }
+  function delConn() {
+    const sel = $('connSel');
+    const v = sel ? sel.value : '';
+    if (!v) { toast('先在下拉里选中要删除的历史连接', true); return; }
+    removeConn(v);
+    renderConns();
+    toast('已删除该历史连接');
+  }
+
   function saveConn() {
     localStorage.setItem('apitoken_base', $('base').value.trim());
     localStorage.setItem('apitoken_key', key());
+    upsertConn(base(), key());
+    renderConns();
     toast('连接信息已保存到本地');
   }
 
@@ -111,6 +172,9 @@
       }
       setStatus('on', '已连接 · ' + state.models.length + ' 个模型');
       $('title').textContent = state.models.length ? $('model').value : '未获取到模型';
+      // 连接成功即记入历史，下次可从下拉一键切换
+      upsertConn(base(), key());
+      renderConns();
       toast('已拉取 ' + state.models.length + ' 个模型');
     } catch (e) {
       setStatus('off', '连接失败');
@@ -284,7 +348,7 @@
       rid ? 'request_id ' + rid : '',
       ch ? '渠道 ' + ch : '',
       upModel ? '上游模型 ' + upModel : '',
-      total ? 'token ' + (usage.prompt_tokens || 0) + '→' + (usage.completion_tokens || 0) : '',
+      total ? 'token ' + fmt(usage.prompt_tokens || 0) + '→' + fmt(usage.completion_tokens || 0) : '',
       first ? '首字 ' + Math.round(first - t0) + ' ms' : '',
       '总耗时 ' + Math.round(performance.now() - t0) + ' ms'
     ];
@@ -297,6 +361,8 @@
   window.send = send;
   window.stopStream = stopStream;
   window.clearChat = clearChat;
+  window.pickConn = pickConn;
+  window.delConn = delConn;
 
   $('input').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -307,6 +373,7 @@
   initModelCombo();
 
   restore();
+  renderConns();
   setStatus('off', '未连接');
   loadModels();
 })();

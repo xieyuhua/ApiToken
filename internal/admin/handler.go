@@ -2,12 +2,12 @@
 package admin
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/demo1/apitoken/internal/config"
 	"github.com/demo1/apitoken/internal/model"
@@ -70,13 +70,14 @@ func (h *Handler) Register(mux *http.ServeMux) {
 }
 
 func (h *Handler) apiInfo(w http.ResponseWriter, _ *http.Request) {
+	rt := h.cfg.RT()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":     model.Version,
 		"routing":     h.cfg.Routing,
-		"auth":        map[string]any{"client_keys_required": len(h.cfg.Security.ClientKeys) > 0, "admin_token_required": h.cfg.Security.AdminToken != ""},
+		"auth":        map[string]any{"client_keys_required": len(rt.ClientKeys) > 0, "admin_token_required": rt.AdminToken != ""},
 		"data_file":   h.cfg.DataFile(),
 		"uptime":      h.store.Uptime().String(),
-		"client_keys": maskedKeys(h.cfg.Security.ClientKeys),
+		"client_keys": maskedKeys(rt.ClientKeys),
 		"defaults": map[string]any{
 			"chat_path":   proxy.DefaultChatPath,
 			"auth_style":  "bearer",
@@ -142,7 +143,7 @@ func (h *Handler) createChannel(w http.ResponseWriter, r *http.Request) {
 		ch.Name = ch.ID
 	}
 	if ch.ID == "" {
-		ch.ID = genChannelID(ch.Name)
+		ch.ID = model.NewChannelID(ch.Name)
 	}
 	saved, err := h.store.Upsert(ch)
 	if err != nil {
@@ -311,15 +312,7 @@ func (h *Handler) testChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = decodeJSON(r, &body)
 	res := proxy.Probe(r.Context(), h.cfg, h.client, ch, body.Model, body.Prompt)
-	info := store.HealthInfo{CheckedAt: time.Now(), LatencyMS: res.LatencyMS}
-	if res.OK {
-		info.Status = "healthy"
-		info.Detail = res.Reply
-	} else {
-		info.Status = "unhealthy"
-		info.Error = res.Error
-	}
-	h.store.SetHealth(id, info)
+	h.store.SetHealth(id, healthInfoFromProbe(res))
 	writeJSON(w, http.StatusOK, res)
 }
 
@@ -404,7 +397,7 @@ func decodeJSON(r *http.Request, v any) error {
 	if err != nil {
 		return err
 	}
-	if len(strings.TrimSpace(string(data))) == 0 {
+	if len(bytes.TrimSpace(data)) == 0 {
 		return nil
 	}
 	if err := json.Unmarshal(data, v); err != nil {
@@ -421,25 +414,4 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]any{"ok": false, "error": msg})
-}
-
-// genChannelID 由名称生成渠道 ID。
-func genChannelID(name string) string {
-	base := make([]rune, 0, 16)
-	for _, r := range strings.ToLower(name) {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			base = append(base, r)
-		case r == ' ' || r == '-' || r == '_':
-			base = append(base, '-')
-		}
-		if len(base) >= 20 {
-			break
-		}
-	}
-	id := strings.Trim(string(base), "-")
-	if id == "" {
-		id = "channel"
-	}
-	return id + "-" + time.Now().Format("150405")
 }

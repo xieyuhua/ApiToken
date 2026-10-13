@@ -5,10 +5,25 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/demo1/apitoken/internal/model"
 	"github.com/demo1/apitoken/internal/proxy"
+	"github.com/demo1/apitoken/internal/store"
 )
+
+// healthInfoFromProbe 把连通性探测结果转成渠道健康状态（连通性测试与渠道体检共用）。
+func healthInfoFromProbe(res proxy.ProbeResult) store.HealthInfo {
+	info := store.HealthInfo{CheckedAt: time.Now(), LatencyMS: res.LatencyMS}
+	if res.OK {
+		info.Status = "healthy"
+		info.Detail = res.Reply
+	} else {
+		info.Status = "unhealthy"
+		info.Error = res.Error
+	}
+	return info
+}
 
 // probeDraft 按提交的草稿配置测试连通性（不保存到存储）。
 // 用于前端「添加渠道」弹窗：用户还没保存、没有渠道 ID 也能先验证。

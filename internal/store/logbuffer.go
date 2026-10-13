@@ -2,6 +2,7 @@ package store
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -42,6 +43,12 @@ func (b *LogBuffer) Add(e model.LogEntry) {
 	}
 }
 
+// at 返回倒数第 i+1 条（i=0 为最新一条）；调用方必须持有缓冲锁。
+func (b *LogBuffer) at(i int) model.LogEntry {
+	n := len(b.buf)
+	return b.buf[(b.head-1-i+n)%n]
+}
+
 // List 返回最近 n 条（最新在前）。
 func (b *LogBuffer) List(n int) []model.LogEntry {
 	b.mu.RLock()
@@ -51,12 +58,7 @@ func (b *LogBuffer) List(n int) []model.LogEntry {
 	}
 	out := make([]model.LogEntry, 0, n)
 	for i := 0; i < n; i++ {
-		// 从最新的前一条开始（head-1）反向绕回
-		idx := b.head - 1 - i
-		for idx < 0 {
-			idx += len(b.buf)
-		}
-		out = append(out, b.buf[idx])
+		out = append(out, b.at(i))
 	}
 	return out
 }
@@ -80,11 +82,7 @@ func (b *LogBuffer) SetMax(max int) {
 	// 因为 List 会加读锁，而本方法已持有写锁。
 	keep := make([]model.LogEntry, 0, b.n)
 	for i := b.n - 1; i >= 0; i-- {
-		idx := b.head - 1 - i
-		for idx < 0 {
-			idx += len(b.buf)
-		}
-		keep = append(keep, b.buf[idx])
+		keep = append(keep, b.at(i))
 	}
 	if len(keep) > max {
 		keep = keep[len(keep)-max:]
@@ -127,11 +125,7 @@ func (b *LogBuffer) Filter(keep func(model.LogEntry) bool) []model.LogEntry {
 	defer b.mu.RUnlock()
 	out := make([]model.LogEntry, 0, b.n)
 	for i := 0; i < b.n; i++ {
-		idx := b.head - 1 - i
-		for idx < 0 {
-			idx += len(b.buf)
-		}
-		if e := b.buf[idx]; keep(e) {
+		if e := b.at(i); keep(e) {
 			out = append(out, e)
 		}
 	}
@@ -147,11 +141,7 @@ func (b *LogBuffer) Find(keep func(model.LogEntry) bool) []model.LogEntry {
 	defer b.mu.RUnlock()
 	var out []model.LogEntry
 	for i := 0; i < b.n; i++ {
-		idx := b.head - 1 - i
-		for idx < 0 {
-			idx += len(b.buf)
-		}
-		e := b.buf[idx]
+		e := b.at(i)
 		if keep == nil || keep(e) {
 			out = append(out, e)
 		}
@@ -165,11 +155,7 @@ func (b *LogBuffer) ForEach(fn func(model.LogEntry)) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	for i := 0; i < b.n; i++ {
-		idx := b.head - 1 - i
-		for idx < 0 {
-			idx += len(b.buf)
-		}
-		fn(b.buf[idx])
+		fn(b.at(i))
 	}
 }
 
@@ -200,7 +186,7 @@ func Match(e model.LogEntry, q model.LogQuery) bool {
 			return false
 		}
 	default:
-		if q.Status != "" && !strings.EqualFold(q.Status, itoa(e.Status)) {
+		if q.Status != "" && !strings.EqualFold(q.Status, strconv.Itoa(e.Status)) {
 			return false
 		}
 	}
@@ -217,14 +203,15 @@ func Match(e model.LogEntry, q model.LogQuery) bool {
 // 逐字段匹配而非把 11 个字段 Join 成一个大串再 ToLower：日志页每次查询都会对
 // 上千条日志调用这里，Join + ToLower 会为每条日志额外分配两段字符串。
 func matchKeyword(e model.LogEntry, kw string) bool {
+	fields := keywordFields(&e)
 	// 先用原始字段匹配：多数情况下命中，无需做任何分配
-	for _, f := range keywordFields(&e) {
+	for _, f := range fields {
 		if f != "" && strings.Contains(f, kw) {
 			return true
 		}
 	}
 	// 未命中再逐字段小写后匹配（仍然不构造拼接串）
-	for _, f := range keywordFields(&e) {
+	for _, f := range fields {
 		if f != "" && strings.Contains(strings.ToLower(f), kw) {
 			return true
 		}
@@ -233,34 +220,12 @@ func matchKeyword(e model.LogEntry, kw string) bool {
 }
 
 // keywordFields 列出参与关键词搜索的字段。
-func keywordFields(e *model.LogEntry) [11]string {
-	return [11]string{
+func keywordFields(e *model.LogEntry) [12]string {
+	return [12]string{
 		e.RequestID, e.Model, e.UpstreamModel, e.ChannelID, e.ChannelName,
-		e.Path, e.Error, e.ClientIP, e.Endpoint,
+		e.Path, e.Error, e.ClientIP, e.UserAgent, e.Endpoint,
 		e.RequestSnippet, e.ResponseSnippet,
 	}
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }
 
 // BuildSummary 对过滤后的日志做聚合统计。
@@ -306,7 +271,7 @@ func BuildSummary(items []model.LogEntry) model.LogSummary {
 		}
 		accumulate(k, e)
 
-		sk := itoa(e.Status)
+		sk := strconv.Itoa(e.Status)
 		ks := statusAgg[sk]
 		if ks == nil {
 			ks = &model.LogKV{Name: sk}

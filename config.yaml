@@ -48,57 +48,7 @@ upstream:
 # 显式路由：同一个模型名可以绑定多个渠道，按顺序故障转移
 
 routes:
-  - model: "deepseek-chat"
-    enabled: true
-    channels: ["deepseek-1", "tencent-1"] # 按顺序尝试
-    model_map: # 可选：按渠道覆盖真实模型名
-      tencent-1: "deepseek-v3.2"
 # 渠道（上游账号）。也可以启动后在 Web 界面添加
-
 channels:
-  - id: "deepseek-1"
-    name: "DeepSeek 官方"
-    base_url: "https://api.deepseek.com/v1"
-    api_key: "sk-xxxxxxxxxxxxxxxx"
-    models: ["deepseek-chat", "deepseek-reasoner"]
-    weight: 1
-    priority: 10
-    enabled: true
-  - id: "sensenova-1"
-    name: "商汤日日新 Token Plan"
-    base_url: "https://token.sensenova.cn/v1"
-    api_key: "xxxxxxxxxxxxxxxx"
-    models: ["SenseNova-6.8-Flash-Lite"]
-    weight: 1
-    priority: 20
-    enabled: true
-    # 若用大装置 compatible-mode，base_url 改为 https://api.sensenova.cn/compatible-mode/v2
-  - id: "tencent-1"
-    name: "腾讯云代码助手 WorkBuddy"
-    base_url: "https://api.copilot.tencent.com/api/v1"
-    api_key: "xxxxxxxxxxxxxxxx"
-    models: [] # 留空 = 放通所有模型，也可在界面上点“拉取模型”自动填充
-    weight: 1
-    priority: 5
-    enabled: true
-    note: "专享版 base_url: https://{enterpriseId}.copilot.qq.com/api/v1"
-  - id: "opencode-1"
-    name: "OpenCode Zen"
-    base_url: "https://opencode.ai/zen/v1"
-    api_key: "xxxxxxxxxxxxxxxx"
-    models: ["deepseek-v4-pro", "deepseek-v4.1-flash", "kimi-k2.7-code", "glm-5.3", "minimax-m3"]
-    weight: 1
-    priority: 30
-    enabled: false
-    note: "订阅 Key 直接当 Bearer 用；Claude 系需 chat_path=/messages，GPT 系需 /responses"
-  - id: "stepfun-1"
-    name: "阶跃星辰 StepFun"
-    base_url: "https://api.stepfun.com/v1"
-    api_key: "xxxxxxxxxxxxxxxx"
-    models: ["step-3.5-flash", "step-2-16k", "step-1x-32k"]
-    weight: 1
-    priority: 40
-    enabled: false
-    note: "Coding Plan 订阅用 https://api.stepfun.com/step_plan/v1"
 ui:
   theme: light

@@ -226,18 +226,18 @@ func (c *Config) runtimeFromFields() *Runtime {
 		MaxAttempts:      c.Routing.MaxAttempts,
 		RetryStatus:      append([]int(nil), c.Routing.RetryStatus...),
 		ForceStreamUsage: c.Routing.ForceStreamUsage,
-		Cooldown:         c.cooldownDuration(),
-		AccessLog:        c.Logging.AccessLog,
-		KeepLogs:         c.Logging.KeepLogs,
-		RecordPayload:    c.Logging.RecordPayload,
-		PayloadLimit:     c.Logging.PayloadLimit,
-		RequestTimeout:   c.Server.RequestTimeout.D(),
-		StreamTimeout:    c.Server.StreamTimeout.D(),
-		MaxBodyBytes:     int64(c.Server.MaxBodyMB) << 20,
-		ConnectTimeout:   c.Upstream.ConnectTimeout.D(),
-		DefaultTimeout:   c.Upstream.DefaultTimeout.D(),
-		ProxyURL:         c.Upstream.ProxyURL,
-		Theme:            c.UI.Theme,
+		// Cooldown 在下方按「是否显式配置」单独处理（nil 与 0 语义不同）
+		AccessLog:      c.Logging.AccessLog,
+		KeepLogs:       c.Logging.KeepLogs,
+		RecordPayload:  c.Logging.RecordPayload,
+		PayloadLimit:   c.Logging.PayloadLimit,
+		RequestTimeout: c.Server.RequestTimeout.D(),
+		StreamTimeout:  c.Server.StreamTimeout.D(),
+		MaxBodyBytes:   int64(c.Server.MaxBodyMB) << 20,
+		ConnectTimeout: c.Upstream.ConnectTimeout.D(),
+		DefaultTimeout: c.Upstream.DefaultTimeout.D(),
+		ProxyURL:       c.Upstream.ProxyURL,
+		Theme:          c.UI.Theme,
 	}
 	if rt.MaxAttempts <= 0 {
 		rt.MaxAttempts = 3
@@ -351,14 +351,6 @@ func (c *Config) applyDefaults() {
 			c.Channels[i].Weight = 1
 		}
 	}
-}
-
-// cooldownDuration 返回生效的冷却时长（未配置时取默认值）。
-func (c *Config) cooldownDuration() time.Duration {
-	if c.Routing.Cooldown != nil {
-		return c.Routing.Cooldown.D()
-	}
-	return DefaultCooldown
 }
 
 func durationPtr(d time.Duration) *Duration {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/demo1/apitoken/internal/model"
@@ -22,7 +23,7 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDOf(r)
 	entry := model.LogEntry{
 		Time: start, RequestID: reqID, Method: r.Method, Path: r.URL.Path,
-		ClientIP: clientIP(r),
+		ClientIP: clientIP(r), UserAgent: logUA(r),
 	}
 
 	if r.Method != http.MethodPost {
@@ -62,7 +63,7 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	if len(info.Dropped) > 0 {
 		h.log.Info("protocol_convert",
 			"model", modelName, "direction", "request", "convert_ms", convertMs,
-			"dropped", joinFields(info.Dropped))
+			"dropped", strings.Join(info.Dropped, ","))
 	}
 
 	h.serve(w, r, relayRequest{
@@ -84,15 +85,4 @@ func anthropicWriteError(w http.ResponseWriter, status int, code, message, typ s
 	}
 	_ = code
 	writeAnthropicError(w, status, typ, message)
-}
-
-func joinFields(v []string) string {
-	out := ""
-	for i, s := range v {
-		if i > 0 {
-			out += ","
-		}
-		out += s
-	}
-	return out
 }

@@ -90,9 +90,13 @@ func Probe(ctx context.Context, cfg *config.Config, client *Client, ch model.Cha
 		return res
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	data, rerr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	res.LatencyMS = time.Since(start).Milliseconds()
 	res.Status = resp.StatusCode
+	if rerr != nil {
+		res.Error = "读取上游响应失败: " + rerr.Error()
+		return res
+	}
 	res.Usage = ParseUsage(data)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		res.Error = truncate(string(data), 500)
@@ -130,7 +134,10 @@ func FetchModels(ctx context.Context, client *Client, ch model.Channel) ([]strin
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, fmt.Errorf("读取上游响应失败: %w", err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
 			return nil, fmt.Errorf("上游未提供 %s 接口（%d），请在渠道里手动填写模型名", ModelsPath, resp.StatusCode)

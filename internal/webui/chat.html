@@ -63,6 +63,13 @@
           <button class="mini" onclick="loadModels()">拉取模型</button>
         </div>
       </div>
+      <div class="field">
+        <label>历史连接（保存在本机浏览器）</label>
+        <div class="row" style="gap:6px">
+          <select id="connSel" style="flex:1" onchange="pickConn(this.value)"></select>
+          <button class="mini ghost" onclick="delConn()">删除</button>
+        </div>
+      </div>
 
       <h3>请求参数</h3>
       <div class="field">
