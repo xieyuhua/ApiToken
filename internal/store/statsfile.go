@@ -21,7 +21,9 @@ type statsFile struct {
 	Channels map[string]model.Stats      `json:"channels"`
 	Usage    map[string]model.ModelUsage `json:"usage"`
 	Totals   model.ModelUsage            `json:"totals"`
-	SavedAt  time.Time                   `json:"saved_at"`
+	// Hourly 趋势用的小时桶（key 为整点 Unix 秒），随统计一起持久化，重启后趋势不断档
+	Hourly  map[int64]model.ModelUsage `json:"hourly,omitempty"`
+	SavedAt time.Time                  `json:"saved_at"`
 }
 
 // statsSnapshotLocked 生成统计快照。调用方需持有 s.mu（读或写）。
@@ -29,6 +31,7 @@ func (s *Store) statsSnapshotLocked() statsFile {
 	f := statsFile{
 		Channels: make(map[string]model.Stats, len(s.channels)),
 		Usage:    make(map[string]model.ModelUsage, len(s.usage)),
+		Hourly:   make(map[int64]model.ModelUsage, len(s.hourly)),
 		Totals:   s.totals,
 		SavedAt:  time.Now(),
 	}
@@ -37,6 +40,9 @@ func (s *Store) statsSnapshotLocked() statsFile {
 	}
 	for name, u := range s.usage {
 		f.Usage[name] = *u
+	}
+	for k, u := range s.hourly {
+		f.Hourly[k] = *u
 	}
 	return f
 }
@@ -68,6 +74,11 @@ func (s *Store) loadStats() {
 		cp := u
 		s.usage[name] = &cp
 	}
+	s.hourly = make(map[int64]*model.ModelUsage, len(f.Hourly))
+	for k, u := range f.Hourly {
+		cp := u
+		s.hourly[k] = &cp
+	}
 	s.totals = f.Totals
 }
 
@@ -82,9 +93,13 @@ func (s *Store) flushStats() {
 	s.statsSaveMu.Lock()
 	defer s.statsSaveMu.Unlock()
 
-	s.mu.RLock()
+	// 小时桶需要在写锁下清理过期数据，故快照整体走写锁而非读锁：
+	// 清理与快照在同一临界区内，落盘的 Hourly 保证已剔除过期桶。
+	// 每 3s 一次的短临界区（只拷贝少量 map）对转发路径影响可忽略。
+	s.mu.Lock()
+	s.pruneHourlyLocked(time.Now())
 	f := s.statsSnapshotLocked()
-	s.mu.RUnlock()
+	s.mu.Unlock()
 
 	data, err := json.MarshalIndent(f, "", " ")
 	if err != nil {

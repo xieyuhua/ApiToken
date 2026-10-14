@@ -30,14 +30,46 @@ func logQuery(r *http.Request) model.LogQuery {
 		Stream:    strings.TrimSpace(q.Get("stream")),
 		Page:      page,
 		PageSize:  size,
+		From:      parseTime(q.Get("from")),
+		To:        parseTime(q.Get("to")),
 	}
+}
+
+// parseTime 解析时间参数，兼容 RFC3339 与常见的本地写法（2006-01-02 15:04:05 / 2006-01-02）。
+// 空串或无法识别的值返回零值（表示不限）：时间范围只是收窄结果的辅助条件，
+// 解析失败不该让整次查询失败。
+func parseTime(s string) time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}
+	}
+	for _, l := range []string{
+		time.RFC3339, "2006-01-02 15:04:05", "2006-01-02T15:04:05",
+		"2006-01-02T15:04", "2006-01-02 15:04", "2006-01-02",
+	} {
+		if t, err := time.ParseInLocation(l, s, time.Local); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
+// useDiskArchive 是否改查磁盘归档（history=1）。
+// 默认查内存热缓冲（快）；开启后能翻到超出内存保留窗口的更早记录，代价是要读文件。
+func useDiskArchive(r *http.Request) bool {
+	return r.URL.Query().Get("history") == "1"
 }
 
 // logs GET /admin/logs —— 分页 + 筛选 + 聚合统计。
 // 兼容旧用法：带 limit 参数且未使用分页时，直接返回数组。
 func (h *Handler) logs(w http.ResponseWriter, r *http.Request) {
 	q := logQuery(r)
-	page := h.store.QueryLogs(q)
+	var page model.LogPage
+	if useDiskArchive(r) {
+		page = h.store.QueryDiskLogs(q)
+	} else {
+		page = h.store.QueryLogs(q)
+	}
 
 	if _, ok := r.URL.Query()["limit"]; ok && r.URL.Query().Get("page") == "" {
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
@@ -106,6 +138,9 @@ func (h *Handler) exportLogs(w http.ResponseWriter, r *http.Request) {
 	q := logQuery(r)
 	// 导出走 ExportLogs 取全部匹配项，避免被 QueryLogs 的 500 条分页上限截断。
 	items := h.store.ExportLogs(q)
+	if useDiskArchive(r) {
+		items = h.store.ExportDiskLogs(q)
+	}
 	format := r.URL.Query().Get("format")
 	stamp := time.Now().Format("20060102-150405")
 

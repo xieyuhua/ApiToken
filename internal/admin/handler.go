@@ -7,7 +7,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/xieyuhua/apitoken/internal/config"
 	"github.com/xieyuhua/apitoken/internal/model"
@@ -21,6 +23,11 @@ type Handler struct {
 	cfg    *config.Config
 	log    *slog.Logger
 	client *proxy.Client
+
+	// 后台自动探活：每个渠道的连续失败计数。
+	// 连续失败达到阈值才进冷却，避免单次网络抖动把健康渠道误伤出候选列表。
+	probeMu    sync.Mutex
+	probeFails map[string]int
 }
 
 // New 构造管理处理器。
@@ -55,6 +62,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /admin/routes/{model}", h.deleteRoute)
 
 	mux.HandleFunc("GET /admin/stats", h.stats)
+	mux.HandleFunc("GET /admin/stats/timeseries", h.statsTimeseries)
 
 	// 网关自检 / 诊断
 	mux.HandleFunc("GET /admin/diagnostics", h.diagnosticsOverview)
@@ -382,6 +390,21 @@ func (h *Handler) deleteRoute(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) stats(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, h.store.Snapshot())
+}
+
+// statsTimeseries 返回按小时聚合的用量趋势，供控制台趋势图使用。
+// GET /admin/stats/timeseries?hours=24（hours 可选，默认 24，上限为数据保留窗口 7 天）
+func (h *Handler) statsTimeseries(w http.ResponseWriter, r *http.Request) {
+	hours := 24
+	if v := strings.TrimSpace(r.URL.Query().Get("hours")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			hours = n
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"hours":  hours,
+		"series": h.store.HourlySeries(hours),
+	})
 }
 
 func decodeChannel(r *http.Request) (model.Channel, error) {

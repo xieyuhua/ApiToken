@@ -154,6 +154,18 @@ type ModelUsage struct {
 	TotalLatencyMS   int64 `json:"total_latency_ms"`
 }
 
+// HourlyBucket 按小时聚合的统计桶（用于控制台趋势图）。
+// TS 为该小时起点的 Unix 秒；缺失的小时前端会得到全 0 的桶，保证折线连续。
+type HourlyBucket struct {
+	TS               int64 `json:"ts"`
+	Requests         int64 `json:"requests"`
+	Success          int64 `json:"success"`
+	Failed           int64 `json:"failed"`
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	TotalLatencyMS   int64 `json:"total_latency_ms"`
+}
+
 // LogEntry 访问日志条目。
 type LogEntry struct {
 	Time             time.Time `json:"time"`
@@ -207,6 +219,10 @@ type LogQuery struct {
 	Stream    string // 1 | 0
 	Page      int
 	PageSize  int
+	// From / To 时间范围（闭区间），零值表示不限。
+	// 磁盘归档查询用它划定范围，避免每次都全量扫描所有分段文件。
+	From time.Time
+	To   time.Time
 }
 
 // LogPage 分页结果。

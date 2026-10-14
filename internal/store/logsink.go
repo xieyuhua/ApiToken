@@ -2,6 +2,7 @@ package store
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -420,4 +421,77 @@ func readLastLines(path string, want int) []model.LogEntry {
 		}
 	}
 	return lines
+}
+
+// 历史检索的兜底上限：归档可能是几天的数据，全量读进内存既慢也没必要
+// （页面是分页浏览的，先给足前若干屏的量即可）。
+const (
+	maxHistoryResults   = 2000   // 返回给上层的最多条数
+	maxHistoryScanLines = 200000 // 单个分段文件最多扫描的行数
+)
+
+// Search 在磁盘分段文件里检索匹配的日志，返回**最新在前**（与内存缓冲顺序一致）。
+//
+// 内存缓冲只保留最近 keep_logs 条，更早的历史要查只能扫磁盘——这就是本方法的用途。
+// 按文件名（含创建时间戳）倒序遍历，每个文件命中的条目同样倒序后追加，保证全局倒序。
+// 未开启落盘（file_enabled=false）或目录不可用时返回 nil。
+func (s *LogSink) Search(q model.LogQuery) []model.LogEntry {
+	if s.dir == "" {
+		return nil
+	}
+	files, err := filepath.Glob(filepath.Join(s.dir, "access-*.jsonl"))
+	if err != nil || len(files) == 0 {
+		return nil
+	}
+	sort.Strings(files) // 旧 -> 新，下面倒着遍历
+
+	var out []model.LogEntry
+	for i := len(files) - 1; i >= 0 && len(out) < maxHistoryResults; i-- {
+		hit, err := searchSegment(files[i], q)
+		if err != nil {
+			s.logf("读取历史日志失败 %s: %v", filepath.Base(files[i]), err)
+			continue
+		}
+		out = append(out, hit...)
+		if len(out) > maxHistoryResults {
+			out = out[:maxHistoryResults]
+		}
+	}
+	return out
+}
+
+// searchSegment 扫描单个分段文件，返回其中匹配的日志（最新在前）。
+// 文件是时间正序追加的，故收集完反转一次即可；损坏的行跳过而不是中断整个检索。
+func searchSegment(path string, q model.LogQuery) ([]model.LogEntry, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var hit []model.LogEntry
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64<<10), logRecoverChunk)
+	lines := 0
+	for sc.Scan() && lines < maxHistoryScanLines {
+		line := bytes.TrimSpace(sc.Bytes())
+		lines++
+		if len(line) == 0 {
+			continue
+		}
+		var e model.LogEntry
+		if err := json.Unmarshal(line, &e); err != nil {
+			continue
+		}
+		if Match(e, q) {
+			hit = append(hit, e)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(hit)-1; i < j; i, j = i+1, j-1 {
+		hit[i], hit[j] = hit[j], hit[i]
+	}
+	return hit, nil
 }

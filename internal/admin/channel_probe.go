@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -23,6 +24,45 @@ func healthInfoFromProbe(res proxy.ProbeResult) store.HealthInfo {
 		info.Error = res.Error
 	}
 	return info
+}
+
+// probeFailThreshold 连续探活失败多少次才进入冷却。探活是低频的（默认 60s 一次），
+// 用连续失败阈值过滤单次抖动，避免把健康渠道误伤出候选列表。
+const probeFailThreshold = 3
+
+// ProbeAllChannels 后台自动探活：对所有启用渠道做一次最小对话请求，
+// 更新健康状态；连续失败达到阈值时进入冷却，成功则立即清除冷却。
+//
+// 与真实请求路径的冷却区分开：探活冷却只是「提前」把挂掉的渠道移出候选，
+// 真实请求失败仍会走 recordChannelStatsLocked 的冷却逻辑，两者互不干扰。
+func (h *Handler) ProbeAllChannels(ctx context.Context) {
+	cd := h.cfg.RT().Cooldown
+
+	for _, ch := range h.store.ListChannels() {
+		if !ch.Enabled {
+			continue
+		}
+		res := proxy.Probe(ctx, h.cfg, h.client, ch, "", "ping")
+		h.store.SetHealth(ch.ID, healthInfoFromProbe(res))
+
+		h.probeMu.Lock()
+		if h.probeFails == nil {
+			h.probeFails = map[string]int{}
+		}
+		if res.OK {
+			h.probeFails[ch.ID] = 0
+			if cd > 0 {
+				h.store.SetCooldown(ch.ID, time.Time{}) // 恢复：立即回到候选列表
+			}
+		} else {
+			h.probeFails[ch.ID]++
+			if h.probeFails[ch.ID] >= probeFailThreshold && cd > 0 {
+				h.store.SetCooldown(ch.ID, time.Now().Add(cd))
+				h.log.Warn("渠道连续探活失败，进入冷却", "channel", ch.ID, "err", res.Error)
+			}
+		}
+		h.probeMu.Unlock()
+	}
 }
 
 // probeDraft 按提交的草稿配置测试连通性（不保存到存储）。

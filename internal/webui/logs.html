@@ -74,12 +74,18 @@
                             <option>100</option>
                             <option>200</option>
                         </select></div>
+                    <div><label>开始时间</label><input id="q_from" type="datetime-local" /></div>
+                    <div><label>结束时间</label><input id="q_to" type="datetime-local" /></div>
                     <div style="display:flex;align-items:flex-end;gap:8px">
                         <button onclick="page=1;load()">查询</button>
                         <button class="ghost" onclick="resetFilters()">重置</button>
+                        <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;color:var(--muted);cursor:pointer;white-space:nowrap"
+                               title="勾选后从磁盘归档 data/logs 检索，能翻到超出内存保留窗口的更早记录；不勾选只查内存热数据（更快）">
+                            <input type="checkbox" id="q_history" style="margin:0" /> 查历史归档
+                        </label>
                     </div>
                 </div>
-                <p class="hint">日志保存在内存中（可通过 config.yaml 的 <code>logging.keep_logs</code> 调整条数），重启后清空。</p>
+                <p class="hint">默认查内存热日志（最多保留 <code>logging.keep_logs</code> 条，重启后清空）；勾选「查历史归档」可从磁盘 <code>data/logs</code> 检索更早记录（慢一些，单次最多 2000 条）。时间范围对两种模式都生效。</p>
             </div>
 
             <table>
@@ -141,18 +147,25 @@
                 stream: $('q_stream').value,
                 keyword: $('q_keyword').value.trim()
             });
+            // datetime-local 形如 2026-10-14T15:04，把 T 换成空格后后端可直接 ParseInLocation
+            if ($('q_from').value) p.set('from', $('q_from').value.replace('T', ' '));
+            if ($('q_to').value) p.set('to', $('q_to').value.replace('T', ' '));
+            if ($('q_history').checked) p.set('history', '1');
             for (const k in extra) p.set(k, extra[k]);
             return p.toString();
         }
 
         async function load() {
             try {
+                const hist = $('q_history').checked;
                 const data = await api('/admin/logs?' + query());
                 page = data.page; pages = data.pages;
                 renderCards(data.stats, data);
                 renderTable(data.items);
                 renderPager(data);
-                $('meta').textContent = '共 ' + fmt(data.kept) + ' 条内存日志';
+                $('meta').textContent = hist
+                    ? '磁盘归档命中 ' + fmt(data.total) + ' 条'
+                    : '共 ' + fmt(data.kept) + ' 条内存日志';
                 await loadFacets();
             } catch (e) { toast(e.message, true); }
         }
@@ -286,6 +299,9 @@
         function resetFilters() {
             ['q_model', 'q_channel', 'q_status', 'q_stream'].forEach(id => $(id).value = '');
             $('q_keyword').value = '';
+            $('q_from').value = '';
+            $('q_to').value = '';
+            $('q_history').checked = false;
             page = 1;
             load();
         }
@@ -380,8 +396,9 @@
 
         initToken();
         $('q_keyword').addEventListener('keydown', e => { if (e.key === 'Enter') { page = 1; load(); } });
-        ['q_model', 'q_channel', 'q_status', 'q_stream', 'q_size'].forEach(id =>
+        ['q_model', 'q_channel', 'q_status', 'q_stream', 'q_size', 'q_from', 'q_to'].forEach(id =>
             $(id).addEventListener('change', () => { page = 1; load(); }));
+        $('q_history').addEventListener('change', () => { page = 1; load(); });
         $('autoRefresh').addEventListener('change', scheduleAuto);
 
         load();

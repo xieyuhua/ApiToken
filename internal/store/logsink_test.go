@@ -68,6 +68,55 @@ func waitFor(t *testing.T, what string, fn func() bool) {
 	t.Fatalf("等待超时: %s", what)
 }
 
+// TestLogSinkSearch 验证磁盘归档的历史检索：各过滤条件生效，且结果按时间倒序。
+func TestLogSinkSearch(t *testing.T) {
+	dir := t.TempDir()
+	sink := newTestSink(t, dir, 7, 1<<20, 100)
+
+	base := time.Date(2024, 1, 15, 10, 0, 0, 0, time.Local)
+	entries := []model.LogEntry{
+		{RequestID: "r1", Model: "m2", Status: 200, Time: base},
+		{RequestID: "r2", Model: "m1", Status: 200, Time: base.Add(time.Hour)},
+		{RequestID: "r3", Model: "m2", Status: 500, Time: base.Add(2 * time.Hour)},
+	}
+	for _, e := range entries {
+		sink.Enqueue(e)
+	}
+	sink.Close() // 退出前 flush，保证三条都已落盘
+
+	// 无条件检索：返回全部，最新在前
+	got := sink.Search(model.LogQuery{})
+	if len(got) != 3 {
+		t.Fatalf("无条件检索应返回 3 条，实际 %d 条", len(got))
+	}
+	if got[0].RequestID != "r3" || got[2].RequestID != "r1" {
+		t.Fatalf("结果未按时间倒序: %s / %s / %s", got[0].RequestID, got[1].RequestID, got[2].RequestID)
+	}
+
+	// 按模型过滤
+	if got := sink.Search(model.LogQuery{Model: "m1"}); len(got) != 1 || got[0].RequestID != "r2" {
+		t.Fatalf("按 model=m1 过滤失败: %+v", got)
+	}
+
+	// 按失败状态过滤
+	if got := sink.Search(model.LogQuery{Status: "error"}); len(got) != 1 || got[0].RequestID != "r3" {
+		t.Fatalf("按 status=error 过滤失败: %+v", got)
+	}
+
+	// 按时间范围过滤（只覆盖中间那条）
+	got = sink.Search(model.LogQuery{From: base.Add(30 * time.Minute), To: base.Add(90 * time.Minute)})
+	if len(got) != 1 || got[0].RequestID != "r2" {
+		t.Fatalf("按时间范围过滤失败: %+v", got)
+	}
+
+	// 未开启落盘（纯内存模式）应返回空结果而不是报错
+	mem := NewLogSink(LogSinkOptions{Dir: "", Buffer: NewLogBuffer(10)})
+	mem.Close()
+	if got := mem.Search(model.LogQuery{}); len(got) != 0 {
+		t.Fatalf("未开启落盘时应返回空结果，实际 %d 条", len(got))
+	}
+}
+
 // TestLogSinkAsyncWriteToFile 校验日志异步落盘：请求路径入队后，
 // 即使还没 Close，文件里也能读到内容（由后台协程批量写入）。
 func TestLogSinkAsyncWriteToFile(t *testing.T) {

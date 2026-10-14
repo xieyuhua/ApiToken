@@ -161,6 +161,12 @@ func (b *LogBuffer) ForEach(fn func(model.LogEntry)) {
 
 // Match 判断日志是否满足查询条件。
 func Match(e model.LogEntry, q model.LogQuery) bool {
+	if !q.From.IsZero() && e.Time.Before(q.From) {
+		return false
+	}
+	if !q.To.IsZero() && e.Time.After(q.To) {
+		return false
+	}
 	if q.Model != "" && e.Model != q.Model {
 		return false
 	}

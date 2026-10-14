@@ -50,9 +50,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	app := gateway.New(cfg, st, logger)
+	app.StartHealthMonitor()
+
 	srv := &http.Server{
 		Addr:              cfg.Server.Addr,
-		Handler:           gateway.New(cfg, st, logger).Handler(),
+		Handler:           app.Handler(),
 		ReadHeaderTimeout: 15 * time.Second,
 		ReadTimeout:       cfg.Server.ReadTimeout.D(),
 		WriteTimeout:      cfg.Server.WriteTimeout.D(),
@@ -86,6 +89,8 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Error("关闭超时", "err", err)
 	}
+	// 停止后台探活循环，避免退出时仍有探测请求在途
+	app.StopHealthMonitor()
 	// HTTP 已停止接受请求，此时 flush 日志管道，避免丢掉最后一批访问日志
 	st.CloseLogs()
 	logger.Info("已退出")

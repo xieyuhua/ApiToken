@@ -355,12 +355,139 @@ function hexToRgba(hex, a) {
   return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
 }
 
+/* ===== 趋势图（按小时的时间序列折线图） ===== */
+const _trendCharts = {};
+
+// renderTrend 渲染最近若干小时的趋势（X 轴为时间）。
+// series: [{ts, requests, success, failed, prompt_tokens, completion_tokens}]
+// opts.metric: 'requests'（默认，请求次数）| 'tokens'（输入+输出 token）
+function renderTrend(elId, series, opts = {}) {
+  const el = $(elId);
+  if (!el) return;
+  if (!series || !series.length) {
+    el.innerHTML = '<div class="muted" style="padding:12px 0">暂无趋势数据（用量统计按小时累积）</div>';
+    delete _trendCharts[elId];
+    return;
+  }
+  _trendCharts[elId] = { series, opts };
+  drawTrend(el, series, opts);
+}
+
+function drawTrend(el, series, opts) {
+  const val = i => opts.metric === 'tokens'
+    ? (i.prompt_tokens || 0) + (i.completion_tokens || 0)
+    : (i.requests || 0);
+  const max = Math.max(...series.map(val), 1);
+  const n = series.length;
+
+  let cv = el.querySelector('canvas');
+  if (!cv) { cv = document.createElement('canvas'); el.innerHTML = ''; el.appendChild(cv); }
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(el.clientWidth, 240);
+  const h = 200;
+  cv.width = Math.round(w * dpr);
+  cv.height = Math.round(h * dpr);
+  cv.style.width = w + 'px';
+  cv.style.height = h + 'px';
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const cs = getComputedStyle(document.documentElement);
+  const primary = cs.getPropertyValue('--primary').trim();
+  const muted = cs.getPropertyValue('--muted').trim();
+  const err = cs.getPropertyValue('--err').trim();
+  const border = cs.getPropertyValue('--border').trim();
+
+  const padL = 50, padR = 14, padT = 18, padB = 26;
+  const iw = w - padL - padR, ih = h - padT - padB;
+  const pts = series.map((i, idx) => ({
+    x: n > 1 ? padL + idx * iw / (n - 1) : padL + iw / 2,
+    y: padT + ih - (val(i) / max) * ih,
+    i
+  }));
+  const font = '10px -apple-system, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif';
+
+  // Y 轴网格 + 刻度（0 / ½max / max）
+  ctx.font = font;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  [0, 0.5, 1].forEach(f => {
+    const y = padT + ih - f * ih;
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(w - padR, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = muted;
+    ctx.fillText(fmt(Math.round(max * f)), padL - 8, y);
+  });
+
+  // 面积渐变填充
+  const grad = ctx.createLinearGradient(0, padT, 0, padT + ih);
+  grad.addColorStop(0, hexToRgba(primary, 0.22));
+  grad.addColorStop(1, hexToRgba(primary, 0));
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, padT + ih);
+  pts.forEach(p => ctx.lineTo(p.x, p.y));
+  ctx.lineTo(pts[pts.length - 1].x, padT + ih);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // 折线
+  ctx.beginPath();
+  pts.forEach((p, k) => k ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+  ctx.strokeStyle = primary;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+
+  // 失败点标红：这些小时里有请求失败
+  pts.forEach(p => {
+    if (!p.i.failed) return;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = err;
+    ctx.fill();
+  });
+
+  // 峰值数值标注
+  const peak = pts.reduce((a, b) => (val(b.i) > val(a.i) ? b : a), pts[0]);
+  if (val(peak.i) > 0) {
+    ctx.font = font;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = muted;
+    ctx.fillText(fmt(val(peak.i)), peak.x, Math.max(peak.y - 7, 11));
+  }
+
+  // X 轴：小时标签，隔点显示避免拥挤
+  ctx.font = font;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  const step = Math.max(1, Math.ceil(n / 8));
+  pts.forEach((p, idx) => {
+    if (idx % step && idx !== n - 1) return;
+    const d = new Date(p.i.ts * 1000);
+    ctx.fillStyle = muted;
+    ctx.fillText(String(d.getHours()).padStart(2, '0') + ':00', p.x, h - 8);
+  });
+}
+
 // 窗口缩放时按新宽度重绘所有折线图（测试沙箱可能没有 addEventListener，加保护）
 if (window.addEventListener) {
   window.addEventListener('resize', () => {
     Object.keys(_lineCharts).forEach(id => {
       const el = $(id);
       if (el && _lineCharts[id]) drawLineChart(el, _lineCharts[id].items, _lineCharts[id].opts);
+    });
+    Object.keys(_trendCharts).forEach(id => {
+      const el = $(id);
+      if (el && _trendCharts[id]) drawTrend(el, _trendCharts[id].series, _trendCharts[id].opts);
     });
   });
 }

@@ -3,6 +3,7 @@ package gateway
 
 import (
 	"bufio"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/xieyuhua/apitoken/internal/admin"
@@ -31,6 +33,10 @@ type Server struct {
 	log   *slog.Logger
 	proxy *proxy.Handler
 	admin *admin.Handler
+
+	// 后台渠道探活循环的停止信号
+	healthStop chan struct{}
+	healthOnce sync.Once
 }
 
 // New 构造网关服务。
@@ -42,6 +48,38 @@ func New(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		proxy: proxy.NewHandler(st, cfg, log),
 		admin: admin.New(st, cfg, log),
 	}
+}
+
+// healthProbeInterval 渠道后台自动探活间隔。探活只做一次最小对话请求（max_tokens=16），
+// 频率不必太高：60s 足够在「流量低谷渠道挂掉」时及时发现，又不至于给上游加额外负担。
+const healthProbeInterval = 60 * time.Second
+
+// StartHealthMonitor 启动渠道后台自动探活循环：启动后立即探一次，之后每 60s 一次。
+// 结果写入渠道健康状态，连续失败会进入冷却（见 admin.Handler.ProbeAllChannels）。
+func (s *Server) StartHealthMonitor() {
+	s.healthStop = make(chan struct{})
+	go func() {
+		s.admin.ProbeAllChannels(context.Background())
+		ticker := time.NewTicker(healthProbeInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				s.admin.ProbeAllChannels(context.Background())
+			case <-s.healthStop:
+				return
+			}
+		}
+	}()
+}
+
+// StopHealthMonitor 停止后台探活循环（优雅退出时调用）。
+func (s *Server) StopHealthMonitor() {
+	s.healthOnce.Do(func() {
+		if s.healthStop != nil {
+			close(s.healthStop)
+		}
+	})
 }
 
 // Handler 构建完整路由。

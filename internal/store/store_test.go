@@ -56,6 +56,62 @@ routing:
 	return st
 }
 
+// SetCooldown 供后台探活使用：设置后渠道进入冷却，传零值则解除冷却。
+func TestSetCooldownForProbe(t *testing.T) {
+	s := &Store{cooldownUntil: map[string]time.Time{}}
+
+	s.SetCooldown("c1", time.Now().Add(time.Minute))
+	if rem := s.cooldownRemaining("c1"); rem <= 0 {
+		t.Fatalf("设置冷却后应处于冷却中，剩余 = %v", rem)
+	}
+
+	// 零值 = 解除冷却
+	s.SetCooldown("c1", time.Time{})
+	if rem := s.cooldownRemaining("c1"); rem > 0 {
+		t.Fatalf("解除冷却后剩余应 <= 0，实际 = %v", rem)
+	}
+}
+
+// 趋势统计：同一小时内的请求累加进同一个桶，缺失的小时补 0，超出保留窗口收敛。
+func TestHourlyTrend(t *testing.T) {
+	s := &Store{}
+	now := time.Now().Truncate(time.Hour)
+
+	// 当前小时：2 成功 + 1 失败，其中一个成功的延迟与 token 各不同
+	s.mu.Lock()
+	s.recordHourlyLocked(now, true, 100*time.Millisecond, 10, 20)
+	s.recordHourlyLocked(now, true, 200*time.Millisecond, 30, 40)
+	s.recordHourlyLocked(now, false, 50*time.Millisecond, 0, 0)
+	s.mu.Unlock()
+
+	series := s.HourlySeries(2)
+	if len(series) != 2 {
+		t.Fatalf("请求 2 小时应返回 2 个桶，实际 %d", len(series))
+	}
+	// 第一个桶（上一小时）无数据 -> 全 0，保证折线不断档
+	if series[0].Requests != 0 || series[0].Success != 0 || series[0].Failed != 0 {
+		t.Fatalf("无数据的小时应补 0 桶，实际 %+v", series[0])
+	}
+
+	cur := series[1]
+	if cur.Requests != 3 || cur.Success != 2 || cur.Failed != 1 {
+		t.Fatalf("请求/成功/失败统计错误: requests=%d success=%d failed=%d",
+			cur.Requests, cur.Success, cur.Failed)
+	}
+	if cur.PromptTokens != 40 || cur.CompletionTokens != 60 {
+		t.Fatalf("token 统计错误（失败不计入）: prompt=%d completion=%d",
+			cur.PromptTokens, cur.CompletionTokens)
+	}
+	if cur.TotalLatencyMS != 350 {
+		t.Fatalf("延迟累计错误: got %d, want 350", cur.TotalLatencyMS)
+	}
+
+	// hours 超过 7 天保留窗口时应收敛到 168 个桶
+	if got := len(s.HourlySeries(10000)); got != 168 {
+		t.Fatalf("超出窗口的 hours 应收敛到 168，实际 %d", got)
+	}
+}
+
 // 冷却期内失败的渠道不再进入候选；成功后立即解除冷却。
 func TestCooldownSkipsFailedChannel(t *testing.T) {
 	st := newCoolStore(t, "60s", 2)

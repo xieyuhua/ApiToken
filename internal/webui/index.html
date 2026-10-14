@@ -37,6 +37,14 @@
   <div class="cards" id="cards"></div>
 
   <section>
+    <h2>用量趋势<span class="sp"></span><span class="muted" style="font-size:12px">按小时聚合，保留最近 7 天</span></h2>
+    <div class="pad">
+      <div class="agg-card"><div class="agg-title">📈 请求次数（最近 24 小时）</div><div id="trendReq"></div></div>
+      <div class="agg-card"><div class="agg-title">🪙 Token 用量（最近 24 小时）</div><div id="trendToken"></div></div>
+    </div>
+  </section>
+
+  <section>
     <h2>聚合分析<span class="sp"></span><span class="muted" style="font-size:12px">基于全部调用日志（内存保留范围内）</span></h2>
     <div class="pad">
       <div class="agg-card"><div class="agg-title">📦 按模型（次数 / 平均延迟）</div><div class="hrows" id="barModel"></div></div>
@@ -59,8 +67,18 @@ async function refresh() {
     ]);
     $('ver').textContent = 'v' + info.version + ' · 运行 ' + info.uptime + ' · 策略 ' + (info.routing?.strategy || '-');
     renderCards(stats);
+    renderTrend24();
     renderAggregate();
   } catch (e) { toast(e.message, true); }
+}
+
+// 用量趋势：按小时聚合的时间序列（请求次数 / Token 用量）
+async function renderTrend24() {
+  try {
+    const d = await api('/admin/stats/timeseries?hours=24');
+    renderTrend('trendReq', d.series, { metric: 'requests' });
+    renderTrend('trendToken', d.series, { metric: 'tokens' });
+  } catch (e) { /* 趋势取不到不影响概览卡片 */ }
 }
 
 // 与「调用日志」页一致的卡片风格（label / value / sub 三段式）

@@ -49,6 +49,10 @@ type Store struct {
 	usage  map[string]*model.ModelUsage
 	totals model.ModelUsage
 
+	// hourly 按小时聚合的统计桶（趋势图用），key = 整点 Unix 秒。
+	// 与 usage/totals 同属请求级统计，写在同一把 s.mu 下。
+	hourly map[int64]*model.ModelUsage
+
 	// saveMu 串行化数据文件落盘，避免并发写同一个 .tmp 文件
 	saveMu sync.Mutex
 
@@ -82,6 +86,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Store, error) {
 		channels:      map[string]*model.Channel{},
 		health:        map[string]HealthInfo{},
 		usage:         map[string]*model.ModelUsage{},
+		hourly:        map[int64]*model.ModelUsage{},
 		cooldownUntil: map[string]time.Time{},
 		noStreamOpts:  map[string]bool{},
 		logs:          NewLogBuffer(cfg.RT().KeepLogs),
@@ -378,6 +383,19 @@ func (s *Store) markCooldown(id string, until time.Time) {
 		s.cooldownUntil = map[string]time.Time{}
 	}
 	s.cooldownUntil[id] = until
+}
+
+// SetCooldown 设置或清除渠道冷却截止时间（后台自动探活使用）。
+// until 为零值时清除冷却。真实请求路径的冷却由 recordChannelStatsLocked 维护，
+// 这里单独暴露给探活逻辑，让「探活发现渠道挂了」也能提前把它移出候选列表。
+func (s *Store) SetCooldown(id string, until time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if until.IsZero() {
+		delete(s.cooldownUntil, id)
+	} else {
+		s.markCooldown(id, until)
+	}
 }
 
 // SupportsStreamOptions 渠道是否可以注入 stream_options（未被上游拒绝过）。
@@ -705,6 +723,7 @@ func (s *Store) RecordFinish(channelID, modelName string, ok bool, total, attemp
 		u.Failed++
 		s.totals.Failed++
 	}
+	s.recordHourlyLocked(now, ok, total, prompt, completion)
 	s.markStatsDirty()
 }
 
@@ -732,7 +751,80 @@ func (s *Store) RecordRequest(name string, ok bool, latency time.Duration, promp
 		u.Failed++
 		s.totals.Failed++
 	}
+	s.recordHourlyLocked(time.Now(), ok, latency, prompt, completion)
 	s.markStatsDirty()
+}
+
+// hourlyRetention 趋势数据的保留窗口。7 天足够看清日间波动，
+// 同时把桶数量压在一百多个，内存与落盘体积都可忽略。
+const hourlyRetention = 7 * 24 * time.Hour
+
+// recordHourlyLocked 把一次请求累加到它所属的小时桶。调用方需持有 s.mu。
+//
+// 只记录「请求级」维度（次数/成功/失败/token/耗时），不含渠道维度：
+// 趋势图回答的是「近期用量如何变化」，不需要把故障转移的每次尝试都算进去。
+func (s *Store) recordHourlyLocked(now time.Time, ok bool, latency time.Duration, prompt, completion int64) {
+	if s.hourly == nil {
+		s.hourly = map[int64]*model.ModelUsage{}
+	}
+	key := now.Truncate(time.Hour).Unix()
+	b := s.hourly[key]
+	if b == nil {
+		b = &model.ModelUsage{}
+		s.hourly[key] = b
+	}
+	b.Requests++
+	b.TotalLatencyMS += latency.Milliseconds()
+	if ok {
+		b.Success++
+		b.PromptTokens += prompt
+		b.CompletionTokens += completion
+	} else {
+		b.Failed++
+	}
+}
+
+// pruneHourlyLocked 丢弃超出保留窗口的小时桶。调用方需持有 s.mu。
+func (s *Store) pruneHourlyLocked(now time.Time) {
+	if len(s.hourly) == 0 {
+		return
+	}
+	cutoff := now.Add(-hourlyRetention).Truncate(time.Hour).Unix()
+	for k := range s.hourly {
+		if k < cutoff {
+			delete(s.hourly, k)
+		}
+	}
+}
+
+// HourlySeries 返回最近 hours 个小时的趋势序列（按时间正序）。
+// 缺失的小时补全 0 桶，保证前端折线连续、不会因为空档被拉平。
+func (s *Store) HourlySeries(hours int) []model.HourlyBucket {
+	if hours <= 0 {
+		hours = 24
+	}
+	if hours > int(hourlyRetention/time.Hour) {
+		hours = int(hourlyRetention / time.Hour)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	now := time.Now().Truncate(time.Hour)
+	start := now.Add(-time.Duration(hours-1) * time.Hour)
+	out := make([]model.HourlyBucket, 0, hours)
+	for t := start; !t.After(now); t = t.Add(time.Hour) {
+		b := model.HourlyBucket{TS: t.Unix()}
+		if u := s.hourly[t.Unix()]; u != nil {
+			b.Requests = u.Requests
+			b.Success = u.Success
+			b.Failed = u.Failed
+			b.PromptTokens = u.PromptTokens
+			b.CompletionTokens = u.CompletionTokens
+			b.TotalLatencyMS = u.TotalLatencyMS
+		}
+		out = append(out, b)
+	}
+	return out
 }
 
 // Snapshot 统计快照。
@@ -834,9 +926,29 @@ func (s *Store) LogsCount() int { return s.logs.Count() }
 // 用于筛选项汇总这类只需汇总值的场景，避免整份拷贝。
 func (s *Store) ForEachLog(fn func(model.LogEntry)) { s.logs.ForEach(fn) }
 
-// QueryLogs 分页查询访问日志（含聚合统计）。
+// QueryLogs 分页查询访问日志（含聚合统计）。数据源是内存热缓冲（最近 keep_logs 条）。
 func (s *Store) QueryLogs(q model.LogQuery) model.LogPage {
 	items := s.logs.Filter(func(e model.LogEntry) bool { return Match(e, q) })
+	return paginateLogs(items, q, s.logs.Count())
+}
+
+// QueryDiskLogs 在磁盘归档里分页查询访问日志（含聚合统计）。
+//
+// 与 QueryLogs 只差数据源：这里扫 data/logs 下的 JSONL 分段文件，能查到超出
+// 内存保留窗口的历史数据。日志未开启落盘（file_enabled=false）时返回空结果。
+// 代价是比内存查询慢（要读文件），所以默认仍走 QueryLogs，页面显式切换才用它。
+func (s *Store) QueryDiskLogs(q model.LogQuery) model.LogPage {
+	var items []model.LogEntry
+	if s.sink != nil {
+		items = s.sink.Search(q)
+	}
+	return paginateLogs(items, q, len(items))
+}
+
+// paginateLogs 是日志分页的统一实现（内存查询与磁盘归档查询共用）。
+// kept 表示数据源侧的规模：内存查询传缓冲保留条数，磁盘查询传本次检索到的命中条数
+// （受 maxHistoryResults 上限约束）。
+func paginateLogs(items []model.LogEntry, q model.LogQuery, kept int) model.LogPage {
 	summary := BuildSummary(items)
 
 	page, size := q.Page, q.PageSize
@@ -871,7 +983,7 @@ func (s *Store) QueryLogs(q model.LogQuery) model.LogPage {
 		Page:     page,
 		PageSize: size,
 		Pages:    pages,
-		Kept:     s.logs.Count(),
+		Kept:     kept,
 		Stats:    summary,
 	}
 }
@@ -880,6 +992,15 @@ func (s *Store) QueryLogs(q model.LogQuery) model.LogPage {
 // CSV/JSON 导出需要完整数据，若走 QueryLogs 会被 500 条分页上限截断成第一页。
 func (s *Store) ExportLogs(q model.LogQuery) []model.LogEntry {
 	return s.logs.Filter(func(e model.LogEntry) bool { return Match(e, q) })
+}
+
+// ExportDiskLogs 返回磁盘归档中全部匹配的日志（最新在前），不套分页上限。
+// 导出历史数据（history=1）时使用；日志未开启落盘时返回 nil。
+func (s *Store) ExportDiskLogs(q model.LogQuery) []model.LogEntry {
+	if s.sink == nil {
+		return nil
+	}
+	return s.sink.Search(q)
 }
 
 // RequestLogs 返回同一 request_id 的全部日志，按发生顺序（最早 -> 最新）。
