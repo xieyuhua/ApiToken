@@ -206,6 +206,36 @@ function renderColumns(elId, items, opts = {}) {
   }).join('');
 }
 
+/* ===== 横向条形图（展示全部条目 + 详细数值） ===== */
+function renderBars(elId, items, opts = {}) {
+  const el = $(elId);
+  if (!el) return;
+  if (!items || !items.length) { el.innerHTML = '<div class="muted">暂无数据</div>'; return; }
+  const val = i => opts.showTokens ? ((i.prompt_tokens || 0) + (i.completion_tokens || 0)) : (i.count || 0);
+  // 不截断：展示全部条目，按度量值降序
+  const list = items.slice().sort((a, b) => val(b) - val(a));
+  const max = Math.max(...list.map(val), 1);
+
+  el.innerHTML = list.map(i => {
+    const v = val(i);
+    const pct = Math.max(1, Math.round(v * 100 / max));
+    const bad = !opts.showTokens && (i.failed || 0) > 0;
+    // 主值：条形对应的度量；副值：失败数 + 平均延迟
+    const main = opts.showTokens
+      ? '↓' + fmt(i.prompt_tokens) + ' ↑' + fmt(i.completion_tokens)
+      : fmt(i.count || 0) + ' 次';
+    const extra = [
+      i.failed ? '失败 ' + fmt(i.failed) : '',
+      i.avg_latency_ms != null ? '平均 ' + fmtLatency(i.avg_latency_ms) : ''
+    ].filter(Boolean).join(' · ');
+    return '<div class="hrow">' +
+      '<div class="hname" title="' + esc(i.name) + '">' + esc(i.name) + '</div>' +
+      '<div class="hbar-track"><div class="hbar' + (bad ? ' bad' : '') + '" style="width:' + pct + '%"></div></div>' +
+      '<div class="hinfo">' + main + (extra ? ' <span class="hm">· ' + extra + '</span>' : '') + '</div>' +
+      '</div>';
+  }).join('');
+}
+
 /* ===== 折线图（Canvas 绘制：文字固定像素不变形、随主题变色、窗口缩放自适应） ===== */
 const _lineCharts = {};
 

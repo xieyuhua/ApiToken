@@ -39,11 +39,11 @@
   <section>
     <h2>聚合分析<span class="sp"></span><span class="muted" style="font-size:12px">基于全部调用日志（内存保留范围内）</span></h2>
     <div class="pad">
-      <div class="agg-card"><div class="agg-title">📦 按模型（次数 / 平均延迟）</div><div class="cols" id="barModel"></div></div>
-      <div class="agg-card"><div class="agg-title">🪙 按模型 Token 用量（↓输入 / ↑输出）</div><div class="cols" id="barToken"></div></div>
-      <div class="agg-card"><div class="agg-title">🔌 按渠道（次数 / 平均延迟）</div><div class="cols" id="barChannel"></div></div>
-      <div class="agg-card"><div class="agg-title">🪙 按渠道 Token 用量（↓输入 / ↑输出）</div><div class="cols" id="barChannelToken"></div></div>
-      <div class="agg-card"><div class="agg-title">🚦 按状态码</div><div class="cols" id="barStatus"></div></div>
+      <div class="agg-card"><div class="agg-title">📦 按模型（次数 / 平均延迟）</div><div class="hrows" id="barModel"></div></div>
+      <div class="agg-card"><div class="agg-title">🪙 按模型 Token 用量（↓输入 / ↑输出）</div><div class="hrows" id="barToken"></div></div>
+      <div class="agg-card"><div class="agg-title">🔌 按渠道（次数 / 平均延迟）</div><div class="hrows" id="barChannel"></div></div>
+      <div class="agg-card"><div class="agg-title">🪙 按渠道 Token 用量（↓输入 / ↑输出）</div><div class="hrows" id="barChannelToken"></div></div>
+      <div class="agg-card"><div class="agg-title">🚦 按状态码</div><div class="hrows" id="barStatus"></div></div>
     </div>
   </section>
 </main>
@@ -82,11 +82,11 @@ async function renderAggregate() {
   try {
     const data = await api('/admin/logs?page=1&page_size=1');
     const s = data.stats || {};
-    renderLine('barModel', s.by_model, { showLatency: true });
-    renderLine('barToken', s.by_model, { showTokens: true });
-    renderLine('barChannel', s.by_channel, { showLatency: true });
-    renderLine('barChannelToken', s.by_channel, { showTokens: true });
-    renderLine('barStatus', s.by_status);
+    renderBars('barModel', s.by_model, { showLatency: true });
+    renderBars('barToken', s.by_model, { showTokens: true });
+    renderBars('barChannel', s.by_channel, { showLatency: true });
+    renderBars('barChannelToken', s.by_channel, { showTokens: true });
+    renderBars('barStatus', s.by_status);
   } catch (e) { /* 日志聚合失败不影响概览卡片 */ }
 }
 
