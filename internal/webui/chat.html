@@ -40,6 +40,7 @@
     <a href="/channels">渠道</a>
     <a href="/routes">路由</a>
     <a href="/logs">调用日志</a>
+    <a href="/runtime-logs">运行日志</a>
     <a href="/diagnostics">测试</a>
     <a href="/chat" class="active">对话</a>
     <a href="/settings">设置</a>
@@ -74,6 +75,15 @@
       </div>
 
       <h3>请求参数</h3>
+      <div class="field">
+        <label>对接协议</label>
+        <select id="proto" onchange="onProtoChange()">
+          <option value="openai">OpenAI · /v1/chat/completions</option>
+          <option value="anthropic">Anthropic · /v1/messages</option>
+          <option value="responses">Codex · /v1/responses</option>
+        </select>
+        <div class="muted" id="protoHint" style="font-size:11.5px;margin-top:4px"></div>
+      </div>
       <div class="field">
         <label>模型（可输入关键词搜索）</label>
         <div class="combo" id="modelBox">
@@ -112,6 +122,13 @@
         </div>
       </div>
       <button class="ghost" style="width:100%" onclick="clearChat()">清空对话</button>
+
+      <h3 style="margin-top:16px">对接协议说明</h3>
+      <div class="muted" style="font-size:11.5px;line-height:1.8">
+        <p style="margin:4px 0"><b style="color:var(--text)">OpenAI</b><br/>通用对话协议，绝大多数 SDK 默认支持，走 <code>/v1/chat/completions</code>。</p>
+        <p style="margin:4px 0"><b style="color:var(--text)">Anthropic</b><br/>Claude Code / Cline 等客户端使用，走 <code>/v1/messages</code>，网关自动与上游 OpenAI 端点互转。</p>
+        <p style="margin:4px 0"><b style="color:var(--text)">Codex</b><br/>OpenAI Codex CLI 等 coding agent 使用，走 <code>/v1/responses</code>（Responses 协议），网关自动转换。</p>
+      </div>
     </aside>
 
     <section class="chat">

@@ -221,6 +221,8 @@ func (h *Handler) BuildRequestOpts(ctx context.Context, cand model.Candidate, pa
 	}
 	target := JoinURL(ch.BaseURL, chatPath)
 
+	// 渠道级代理通过 context 传给 Transport 的 Proxy 闭包，优先于全局 proxy_url。
+	ctx = withChannelProxy(ctx, ch.ProxyURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(raw))
 	if err != nil {
 		return nil, err
@@ -257,14 +259,29 @@ func sanitizeUA(ua string) string {
 	}, ua)
 }
 
-// proxyFor 根据运行时 proxy_url 解析本次请求的代理：
+// channelProxyKey 用于在请求上下文传递渠道级代理配置。
+type channelProxyKey struct{}
+
+// withChannelProxy 把渠道级 proxy_url 写入请求上下文（空值不写入，走全局兜底）。
+func withChannelProxy(ctx context.Context, proxyURL string) context.Context {
+	if strings.TrimSpace(proxyURL) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, channelProxyKey{}, strings.TrimSpace(proxyURL))
+}
+
+// proxyFor 根据渠道级 / 全局 proxy_url 解析本次请求的代理：
 //   - 空：跟随环境变量 HTTP_PROXY/HTTPS_PROXY（与 http.Transport 默认一致）
 //   - none / direct：强制直连（返回 nil, nil）
 //   - 其他：作为固定代理地址
 //
-// 每次请求都读取 cfg.RT()，保证设置页修改 proxy_url 后立即对后续请求生效。
+// 渠道在 BuildRequest 时通过 context 传入自己的 proxy_url，优先于全局配置；
+// 每次请求都读取 cfg.RT()，保证全局 proxy_url 变更后立即对后续请求生效。
 func proxyFor(cfg *config.Config, req *http.Request) (*url.URL, error) {
 	p := strings.TrimSpace(cfg.RT().ProxyURL)
+	if v, ok := req.Context().Value(channelProxyKey{}).(string); ok {
+		p = v // 渠道级代理优先于全局
+	}
 	switch {
 	case p == "":
 		return http.ProxyFromEnvironment(req)

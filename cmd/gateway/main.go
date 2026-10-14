@@ -103,7 +103,7 @@ func newLogger(level string) *slog.Logger {
 	default:
 		lv = slog.LevelInfo
 	}
-	h := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: lv})
+	h := store.RuntimeLogHandler(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: lv}))
 	l := slog.New(h)
 	slog.SetDefault(l)
 	return l

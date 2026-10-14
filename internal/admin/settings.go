@@ -36,9 +36,6 @@ type SettingsView struct {
 	RequestTimeout int `json:"request_timeout"`
 	StreamTimeout  int `json:"stream_timeout"`
 
-	// 出网
-	ProxyURL string `json:"proxy_url"`
-
 	// 界面主题：auto | dark | light
 	Theme string `json:"theme"`
 }
@@ -73,7 +70,6 @@ func viewFromRuntime(rt *config.Runtime, level string) SettingsView {
 		LogLevel:          level,
 		RequestTimeout:    int(rt.RequestTimeout / time.Second),
 		StreamTimeout:     int(rt.StreamTimeout / time.Second),
-		ProxyURL:          rt.ProxyURL,
 		Theme:             rt.Theme,
 	}
 }
@@ -103,7 +99,7 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 			ConfigFile: h.cfg.Path(), DataFile: h.cfg.DataFile(), StatsFile: h.store.StatsFile(), Addr: h.cfg.Server.Addr,
 			Version: model.Version, Uptime: h.store.UptimeString(),
 			RestartNeeded: []string{"监听地址 addr", "数据目录 data_dir", "单次请求体积上限 max_body_mb", "上游连接池参数", "访问日志落盘开关 file_enabled"},
-			HotFields:     []string{"网关密钥 / 管理令牌", "来源 IP 解析", "路由策略与重试", "渠道失败冷却", "日志设置", "请求超时", "出网代理"},
+			HotFields:     []string{"网关密钥 / 管理令牌", "来源 IP 解析", "路由策略与重试", "渠道失败冷却", "日志设置", "请求超时"},
 		},
 		"admin_token_set": rt.AdminToken != "",
 		"revealed":        revealed,
@@ -215,7 +211,6 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	if in.StreamTimeout >= 1 {
 		next.StreamTimeout = time.Duration(in.StreamTimeout) * time.Second
 	}
-	next.ProxyURL = strings.TrimSpace(in.ProxyURL)
 
 	// 界面主题
 	switch in.Theme {
@@ -250,6 +245,6 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		"client_keys_new":       keysChanged,
 		"persist":               h.cfg.Path(),
 		"need_restart":          []string{},
-		"effective_immediately": []string{"网关密钥", "管理令牌", "路由策略", "重试状态码", "渠道失败冷却", "日志设置", "超时", "出网代理"},
+		"effective_immediately": []string{"网关密钥", "管理令牌", "路由策略", "重试状态码", "渠道失败冷却", "日志设置", "超时"},
 	})
 }

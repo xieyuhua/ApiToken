@@ -91,6 +91,39 @@ async function api(path, opts = {}) {
   return data;
 }
 
+/** 下载文件：携带管理令牌鉴权，失败用 toast 提示（不跳转到错误 JSON 页面）。 */
+async function downloadFile(path, fallbackName) {
+  try {
+    const headers = {};
+    if (adminToken()) headers['X-Admin-Token'] = adminToken();
+    const res = await fetch(path, { headers });
+    if (!res.ok) {
+      let msg = 'HTTP ' + res.status;
+      try {
+        const d = await res.json();
+        msg = (d.error && (d.error.message || d.error)) || msg;
+      } catch (e) {}
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    let name = fallbackName;
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = /filename="?([^";]+)"?/.exec(cd);
+    if (m && m[1]) name = m[1];
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast('已导出 ' + name);
+  } catch (e) {
+    toast('导出失败：' + e.message, true);
+  }
+}
+
 let toastTimer;
 function toast(msg, isErr) {
   const t = $('toast');
@@ -146,19 +179,30 @@ function copyText(text) {
   navigator.clipboard?.writeText(text).then(() => toast('已复制'), () => toast('复制失败', true));
 }
 
-/* 通用横向条形图 */
-function renderBars(elId, items, opts = {}) {
+/* 通用竖直柱状图 */
+function renderColumns(elId, items, opts = {}) {
   const el = $(elId);
   if (!el) return;
   if (!items || !items.length) { el.innerHTML = '<div class="muted">暂无数据</div>'; return; }
-  const max = Math.max(...items.map(i => i.count), 1);
-  el.innerHTML = items.map(i => {
-    const pct = Math.round(i.count * 100 / max);
-    const bad = i.failed > 0;
-    const right = opts.showLatency ? `<span class="muted">${fmtLatency(i.avg_latency_ms)}</span>`
-      : `<span class="muted">${fmt(i.count)} 次${i.failed ? ' / 失败 ' + fmt(i.failed) : ''}</span>`;
-    return `<div class="bar"><span class="mono" title="${esc(i.name)}">${esc(String(i.name).slice(0, 22))}</span>
-      <span class="track"><span class="fill ${bad ? 'bad' : ''}" style="width:${pct}%"></span></span>${right}</div>`;
+  // 度量值：默认按次数；showTokens 时按「输入+输出 token 总量」
+  const val = i => opts.showTokens ? ((i.prompt_tokens || 0) + (i.completion_tokens || 0)) : (i.count || 0);
+  // 统一按度量值降序，柱状图横向空间有限，只取前 N 个
+  const list = items.slice().sort((a, b) => val(b) - val(a)).slice(0, opts.top || 12);
+  const max = Math.max(...list.map(val), 1);
+  el.innerHTML = list.map(i => {
+    const pct = Math.max(3, Math.round(val(i) * 92 / max)); // 92% 封顶，柱顶留出数值位
+    const bad = !opts.showTokens && i.failed > 0;
+    const head = opts.showTokens ? `↓${fmt(i.prompt_tokens)} ↑${fmt(i.completion_tokens)}`
+      : opts.showLatency ? fmtLatency(i.avg_latency_ms)
+      : `${fmt(i.count)} 次`;
+    const tip = [
+      i.name, `${fmt(i.count)} 次`, i.failed ? `失败 ${fmt(i.failed)}` : '',
+      i.avg_latency_ms != null ? `平均 ${fmtLatency(i.avg_latency_ms)}` : '',
+      i.prompt_tokens || i.completion_tokens ? `↓${fmt(i.prompt_tokens)} ↑${fmt(i.completion_tokens)}` : ''
+    ].filter(Boolean).join(' · ');
+    return `<div class="col" title="${esc(tip)}">
+      <div class="col-top"><div class="col-val">${head}</div><div class="col-bar ${bad ? 'bad' : ''}" style="height:${pct}%"></div></div>
+      <div class="col-name">${esc(String(i.name).slice(0, 10))}</div></div>`;
   }).join('');
 }
 

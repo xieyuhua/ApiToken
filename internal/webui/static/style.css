@@ -92,11 +92,13 @@ pre.log{font-family:ui-monospace,Consolas,monospace;font-size:12px;background:va
 .kv .k{color:var(--muted)}
 /* 端点等长 URL/值按需断行，不撑破弹窗 */
 .kv span{min-width:0;overflow-wrap:anywhere}
-.bars{display:flex;flex-direction:column;gap:6px;font-size:12px}
-.bar{display:grid;grid-template-columns:150px 1fr 90px;gap:8px;align-items:center}
-.bar .track{background:var(--code-bg);border-radius:4px;height:8px;overflow:hidden}
-.bar .fill{background:var(--primary);height:100%}
-.bar .fill.bad{background:var(--err)}
+.cols{display:flex;align-items:flex-end;gap:10px;font-size:12px}
+.col{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center}
+.col .col-top{height:150px;display:flex;flex-direction:column;justify-content:flex-end;align-items:center}
+.col .col-val{font-size:11px;color:var(--muted);white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
+.col .col-bar{width:72%;max-width:40px;background:var(--primary);border-radius:3px 3px 0 0;min-height:3px;transition:height .3s}
+.col .col-bar.bad{background:var(--err)}
+.col .col-name{max-width:100%;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
 .tagline{display:flex;gap:14px;flex-wrap:wrap;color:var(--muted);font-size:12px}
 
 /* 主题切换按钮 */

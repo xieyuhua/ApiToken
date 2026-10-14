@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>运行日志 · apitoken</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script>(function () { try { var t = localStorage.getItem('apitoken_theme') || 'auto'; if (t === 'auto') { t = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'; } document.documentElement.dataset.theme = t; } catch (e) { } })();</script>
+    <style>
+        .rlog { display: flex; align-items: flex-start; gap: 10px; padding: 4px 8px; font-size: 12px; line-height: 1.7; border-bottom: 1px solid var(--border); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+        .rlog:last-child { border-bottom: 0; }
+        .rlog:hover { background: var(--hover); }
+        .rlog .t { color: var(--muted); flex: none; white-space: nowrap; }
+        .rlog .lv { flex: none; min-width: 52px; text-align: center; font-weight: 700; font-size: 10px; line-height: 1.5; padding: 0 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
+        .rlog .lv.ERROR { color: var(--err); border-color: var(--err-bd); background: var(--err-bg); }
+        .rlog .lv.WARN { color: var(--warn); border-color: var(--warn-bd); background: var(--warn-bg); }
+        .rlog .lv.INFO { color: var(--primary); border-color: var(--user-bd); background: var(--user-bg); }
+        .rlog .lv.DEBUG { color: var(--muted); }
+        .rlog .body { flex: 1; min-width: 0; }
+        .rlog .m { word-break: break-all; }
+        .rlog .a { color: var(--muted); word-break: break-all; }
+        .rlog .kv { margin-right: 12px; }
+        .rlog .kv .k { color: var(--muted); }
+        .rlog .kv .v { color: var(--text); }
+        .pill.err { color: var(--err); border-color: var(--err-bd); background: var(--err-bg); }
+        .pill.warn { color: var(--warn); border-color: var(--warn-bd); background: var(--warn-bg); }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>⚡ apitoken</h1>
+        <nav>
+            <a href="/">控制台</a>
+            <a href="/channels">渠道</a>
+            <a href="/routes">路由</a>
+            <a href="/logs">调用日志</a>
+            <a href="/runtime-logs" class="active">运行日志</a>
+            <a href="/diagnostics">测试</a>
+            <a href="/chat">对话</a>
+            <a href="/settings">设置</a>
+        </nav>
+        <span class="tag" id="meta">-</span>
+        <span class="sp"></span>
+        <input id="token" placeholder="管理令牌 adm-xxx" style="width:190px" />
+        <button class="ghost" onclick="saveToken()">保存</button>
+        <button class="ghost" onclick="load()">刷新</button>
+    </header>
+
+    <main>
+        <section>
+            <h2>运行日志<span class="sp"></span>
+                <span class="muted" style="font-size:12px">进程启动后的运行日志（与控制台输出一致，仅内存保留最近 2000 条）</span>
+                <select id="lvFilter" style="width:auto" onchange="render()">
+                    <option value="">全部级别</option>
+                    <option value="ERROR">ERROR</option>
+                    <option value="WARN">WARN</option>
+                    <option value="INFO">INFO</option>
+                    <option value="DEBUG">DEBUG</option>
+                </select>
+                <input id="kwFilter" placeholder="过滤关键词（消息/属性）" style="width:200px" oninput="render()" />
+                <label class="row" style="display:inline-flex;align-items:center;gap:6px;margin:0">
+                    <input type="checkbox" id="autoRefresh" style="width:auto" checked /><span class="muted"
+                        style="font-size:12px">自动刷新(3s)</span>
+                </label>
+            </h2>
+            <div class="pad" id="logList">
+                <div class="muted">加载中…</div>
+            </div>
+        </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+    <script>
+        let timer = null;
+        let cache = [];   // 最近一次拉取的原始数据
+        let total = 0;
+
+        function fmtLogTime(t) {
+            if (!t) return '-';
+            const d = new Date(t);
+            const p = n => String(n).padStart(2, '0');
+            const ms = String(d.getMilliseconds()).padStart(3, '0');
+            return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${ms}`;
+        }
+
+        function renderAttrs(attrs) {
+            if (!attrs || !attrs.length) return '';
+            const kv = attrs.map(a =>
+                '<span class="kv"><span class="k">' + esc(a.key) + '</span>=<span class="v">' + esc(a.value) + '</span></span>'
+            ).join('');
+            return '<div class="a">' + kv + '</div>';
+        }
+
+        function filtered() {
+            const lv = $('lvFilter').value;
+            const kw = ($('kwFilter').value || '').trim().toLowerCase();
+            return cache.filter(e => {
+                const level = String(e.level || 'INFO').toUpperCase();
+                if (lv && level !== lv) return false;
+                if (kw) {
+                    const hay = (e.msg + ' ' + (e.attrs || []).map(a => a.key + '=' + a.value).join(' ')).toLowerCase();
+                    if (hay.indexOf(kw) < 0) return false;
+                }
+                return true;
+            });
+        }
+
+        function render() {
+            const items = filtered();
+            $('meta').textContent = '显示 ' + items.length + ' / 共 ' + total + ' 条';
+            if (!items.length) {
+                $('logList').innerHTML = '<div class="muted">' + (cache.length ? '没有匹配的运行日志' : '暂无运行日志') + '</div>';
+                return;
+            }
+            $('logList').innerHTML = items.map(e => {
+                const lv = String(e.level || 'INFO').toUpperCase();
+                const cls = ['ERROR', 'WARN', 'INFO', 'DEBUG'].indexOf(lv) >= 0 ? lv : '';
+                return '<div class="rlog">' +
+                    '<span class="t">' + fmtLogTime(e.time) + '</span>' +
+                    '<span class="lv ' + cls + '">' + esc(lv) + '</span>' +
+                    '<div class="body"><span class="m">' + esc(e.msg) + '</span>' + renderAttrs(e.attrs) + '</div>' +
+                    '</div>';
+            }).join('');
+        }
+
+        async function load() {
+            try {
+                const d = await api('/admin/runtime-logs');
+                cache = d.items || [];
+                total = d.total ?? cache.length;
+                render();
+            } catch (e) {
+                $('logList').innerHTML = '<div class="muted">加载失败：' + esc(e.message) + '</div>';
+            }
+        }
+
+        function scheduleAuto() {
+            clearInterval(timer);
+            if ($('autoRefresh').checked) timer = setInterval(load, 3000);
+        }
+
+        initToken();
+        $('autoRefresh').addEventListener('change', scheduleAuto);
+        load();
+        scheduleAuto();
+    </script>
+</body>
+
+</html>

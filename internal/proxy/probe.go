@@ -121,6 +121,8 @@ func FetchModels(ctx context.Context, client *Client, ch model.Channel) ([]strin
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
+	// 拉取模型也遵循渠道级代理（与对话请求一致）。
+	ctx = withChannelProxy(ctx, ch.ProxyURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, JoinURL(ch.BaseURL, ModelsPath), nil)
 	if err != nil {
 		return nil, err

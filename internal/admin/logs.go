@@ -76,6 +76,12 @@ func (h *Handler) clearLogs(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cleared": n})
 }
 
+// runtimeLogs GET /admin/runtime-logs —— 查看进程运行日志（slog 输出，最新在前）。
+func (h *Handler) runtimeLogs(w http.ResponseWriter, _ *http.Request) {
+	rl := store.RuntimeLog()
+	writeJSON(w, http.StatusOK, map[string]any{"items": rl.Lines(), "total": rl.Len()})
+}
+
 // logFacets GET /admin/logs/facets —— 日志页面下拉选项（模型、渠道、平台）。
 func (h *Handler) logFacets(w http.ResponseWriter, _ *http.Request) {
 	models := map[string]bool{}
@@ -112,6 +118,8 @@ func (h *Handler) exportLogs(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="apitoken-logs-%s.csv"`, stamp))
+	// UTF-8 BOM：让 Excel 正确识别中文，避免打开后乱码
+	_, _ = w.Write([]byte("\xEF\xBB\xBF"))
 	cw := csv.NewWriter(w)
 	_ = cw.Write([]string{
 		"time", "request_id", "client_ip", "user_agent", "model", "upstream_model", "channel",

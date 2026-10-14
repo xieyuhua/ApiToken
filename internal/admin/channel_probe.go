@@ -89,6 +89,7 @@ func draftFromQuery(r *http.Request) model.Channel {
 		AuthHeader: q.Get("auth_header"),
 		AuthPrefix: q.Get("auth_prefix"),
 		ChatPath:   q.Get("chat_path"),
+		ProxyURL:   q.Get("proxy_url"),
 	}
 	if n, err := strconv.Atoi(q.Get("timeout_sec")); err == nil {
 		ch.TimeoutSec = n

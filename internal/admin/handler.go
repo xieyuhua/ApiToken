@@ -66,6 +66,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/logs/export", h.exportLogs)
 	mux.HandleFunc("GET /admin/logs/{request_id}", h.logDetail)
 	mux.HandleFunc("DELETE /admin/logs", h.clearLogs)
+
+	// 运行日志（进程自身 slog 输出）
+	mux.HandleFunc("GET /admin/runtime-logs", h.runtimeLogs)
 }
 
 func (h *Handler) apiInfo(w http.ResponseWriter, _ *http.Request) {

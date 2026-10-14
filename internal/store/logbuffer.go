@@ -318,6 +318,8 @@ func accumulate(k *model.LogKV, e model.LogEntry) {
 		k.Failed++
 	}
 	k.TotalLatencyMS += e.LatencyMS
+	k.PromptTokens += e.PromptTokens
+	k.CompletionTokens += e.CompletionTokens
 	if k.Count > 0 {
 		k.AvgLatencyMS = k.TotalLatencyMS / k.Count
 	}

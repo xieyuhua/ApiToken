@@ -118,7 +118,7 @@ func TestSettingsPageAndHotUpdate(t *testing.T) {
 	body := `{"client_keys":["sk-new-aaa1","sk-new-bbb2"],"admin_token":"adm-new-9","strategy":"failover",` +
 		`"max_attempts":2,"force_stream_usage":true,"retry_status":[429,500,503,504],` +
 		`"access_log":false,"keep_logs":300,"record_payload":true,"payload_limit":1500,` +
-		`"request_timeout":120,"stream_timeout":600,"proxy_url":"none"}`
+		`"request_timeout":120,"stream_timeout":600}`
 	rec = adminDo(t, h, "adm-old", http.MethodPost, "/admin/settings", body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("保存设置失败: %d %s", rec.Code, rec.Body.String())
@@ -176,7 +176,7 @@ func TestSettingsPageAndHotUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 	saved2 := string(data)
-	for _, want := range []string{"sk-new-aaa1", "sk-new-bbb2", "adm-new-9", "failover", "channels:", "id: \"c1\"", "keep_logs: 300", "proxy_url: none"} {
+	for _, want := range []string{"sk-new-aaa1", "sk-new-bbb2", "adm-new-9", "failover", "channels:", "id: \"c1\"", "keep_logs: 300"} {
 		if !strings.Contains(saved2, want) {
 			t.Fatalf("配置文件缺少 %q:\n%s", want, saved2)
 		}

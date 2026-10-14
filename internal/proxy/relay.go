@@ -151,6 +151,76 @@ func (s *anthropicStreamWriter) Dropped() []string {
 	return d
 }
 
+// ---------------------------------------------------------------------------
+// OpenAI Responses（/v1/responses，Codex CLI 等使用）
+// ---------------------------------------------------------------------------
+
+// responsesResponder 把 OpenAI 兼容响应转成 OpenAI Responses 格式。
+type responsesResponder struct {
+	info    *translate.ResponsesInfo
+	convert time.Duration // 协议转换累计耗时
+	dropped []string
+}
+
+// addConvert 累加转换耗时，供日志与响应头观测。
+func (r *responsesResponder) addConvert(d time.Duration) { r.convert += d }
+
+func (r *responsesResponder) JSON(w http.ResponseWriter, status int, upstream []byte, _ http.Header, cand model.Candidate) {
+	t0 := time.Now()
+	body, dropped, err := translate.ResponseToResponses(upstream, r.info)
+	r.addConvert(time.Since(t0))
+	if err != nil {
+		WriteError(w, http.StatusBadGateway, "api_error", "上游响应无法转换为 Responses 格式: "+err.Error(), "api_error")
+		return
+	}
+	r.dropped = append(r.dropped, dropped...)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("X-Gateway-Channel", cand.ID)
+	w.Header().Set("X-Gateway-Channel-Name", cand.Name)
+	w.Header().Set("X-Gateway-Upstream-Model", cand.UpstreamModel)
+	w.Header().Set("X-Gateway-Convert-Ms", strconv.FormatInt(r.ConvertMs(), 10))
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+func (r *responsesResponder) Stream() streamWriter {
+	return &responsesStreamWriter{strm: translate.NewResponsesStream(r.info), parent: r}
+}
+
+func (r *responsesResponder) ConvertMs() int64 { return r.convert.Milliseconds() }
+
+type responsesStreamWriter struct {
+	strm   *translate.ResponsesStream
+	parent *responsesResponder
+}
+
+func (s *responsesStreamWriter) Begin() []byte { return s.strm.Begin() }
+
+func (s *responsesStreamWriter) Line(payload string, done bool) []byte {
+	t0 := time.Now()
+	out := s.strm.Line(payload, done)
+	s.parent.addConvert(time.Since(t0))
+	return out
+}
+
+func (s *responsesStreamWriter) End() []byte {
+	t0 := time.Now()
+	out := s.strm.End()
+	s.parent.addConvert(time.Since(t0))
+	return out
+}
+
+func (s *responsesStreamWriter) Usage() Usage {
+	u := s.strm.Usage()
+	return Usage{Prompt: u.InputTokens, Completion: u.OutputTokens}
+}
+
+func (s *responsesStreamWriter) Dropped() []string {
+	d := s.strm.Dropped()
+	s.parent.dropped = append(s.parent.dropped, d...)
+	return d
+}
+
 // isAnthropic 判断是否需要用 Anthropic 的错误结构回包。
 func isAnthropic(resp responder) bool {
 	_, ok := resp.(*anthropicResponder)

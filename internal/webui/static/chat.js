@@ -22,14 +22,28 @@
     if (!isChatFullPath(base())) return apiUrl('/models');
     return base().replace(/\/(chat\/)?completions$/i, '') + '/models';
   }
-  function chatUrl() {
+  function proto() { return ($('proto') && $('proto').value) || 'openai'; }
+  /** 按协议返回请求路径；OpenAI 保留「填完整 completions 地址」的旧用法 */
+  function protoUrl() {
     const b = base();
-    return isChatFullPath(b) ? b : b + '/v1/chat/completions';
+    if (proto() === 'openai' && isChatFullPath(b)) return b;
+    const suffix = proto() === 'openai' ? '/chat/completions' : proto() === 'anthropic' ? '/messages' : '/responses';
+    return /\/v\d+$/i.test(b) ? b + suffix : b + '/v1' + suffix;
+  }
+  /** 协议切换：更新说明文案 */
+  function onProtoChange() {
+    const p = proto();
+    const hint = $('protoHint');
+    if (!hint) return;
+    hint.textContent = p === 'openai' ? '通用对话协议，绝大多数 SDK 默认支持。'
+      : p === 'anthropic' ? 'Anthropic 协议，网关自动与上游 OpenAI 端点互转。'
+      : 'Codex 协议（Responses），供 OpenAI Codex CLI 等 coding agent 使用。';
   }
   function key() { return ($('key').value || '').trim(); }
   function headers(extra) {
     const h = Object.assign({ 'Content-Type': 'application/json' }, extra || {});
     if (key()) h['Authorization'] = 'Bearer ' + key();
+    if (proto() === 'anthropic') h['anthropic-version'] = '2023-06-01';
     return h;
   }
 
@@ -237,24 +251,90 @@
   }
 
   function buildBody() {
-    const msgs = [];
     const sys = $('system').value.trim();
-    if (sys) msgs.push({ role: 'system', content: sys });
-    state.messages.forEach(m => {
-      if (m.role === 'user' || m.role === 'assistant') {
-        if (m.content) msgs.push({ role: m.role, content: m.content });
-      }
-    });
-    const body = {
-      model: $('model').value,
-      messages: msgs,
-      stream: $('mode').value === '1'
-    };
+    const stream = $('mode').value === '1';
     const t = parseFloat($('temp').value);
-    if (!isNaN(t)) body.temperature = t;
     const mt = parseInt($('maxTok').value, 10);
+    const hist = state.messages.filter(m => (m.role === 'user' || m.role === 'assistant') && m.content);
+
+    if (proto() === 'anthropic') {
+      const body = {
+        model: $('model').value,
+        max_tokens: (isNaN(mt) || mt <= 0) ? 1024 : mt,
+        messages: hist.map(m => ({ role: m.role, content: m.content })),
+        stream
+      };
+      if (sys) body.system = sys;
+      if (!isNaN(t)) body.temperature = t;
+      return body;
+    }
+
+    if (proto() === 'responses') {
+      const body = {
+        model: $('model').value,
+        input: hist.map(m => m.role === 'user'
+          ? { type: 'message', role: 'user', content: [{ type: 'input_text', text: m.content }] }
+          : { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: m.content }] }),
+        stream
+      };
+      if (sys) body.instructions = sys;
+      if (!isNaN(t)) body.temperature = t;
+      if (!isNaN(mt) && mt > 0) body.max_output_tokens = mt;
+      return body;
+    }
+
+    // OpenAI
+    const msgs = [];
+    if (sys) msgs.push({ role: 'system', content: sys });
+    hist.forEach(m => msgs.push({ role: m.role, content: m.content }));
+    const body = { model: $('model').value, messages: msgs, stream };
+    if (!isNaN(t)) body.temperature = t;
     if (!isNaN(mt) && mt > 0) body.max_tokens = mt;
     return body;
+  }
+
+  /** 非流式：按协议提取正文 */
+  function parseNonStream(data, p) {
+    if (p === 'anthropic') {
+      return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+    }
+    if (p === 'responses') {
+      let text = '';
+      for (const item of (data.output || [])) {
+        if (item.type !== 'message') continue;
+        for (const c of (item.content || [])) {
+          if (c.type === 'output_text') text += c.text;
+        }
+      }
+      return text;
+    }
+    return (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+  }
+
+  /** 流式：按协议从一个 data 块里提取文本增量 */
+  function streamDelta(j, p) {
+    if (p === 'anthropic') {
+      return (j.type === 'content_block_delta' && j.delta && j.delta.type === 'text_delta') ? (j.delta.text || '') : '';
+    }
+    if (p === 'responses') {
+      return j.type === 'response.output_text.delta' ? (j.delta || '') : '';
+    }
+    return (j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content) || '';
+  }
+
+  /** 流式：按协议提取 usage */
+  function streamUsage(j, p) {
+    if (p === 'responses') return j.response && j.response.usage || null;
+    return j.usage || null;
+  }
+
+  /** 统一成 {prompt_tokens, completion_tokens} 结构 */
+  function normalizeUsage(u) {
+    if (!u) return null;
+    return {
+      prompt_tokens: (u.prompt_tokens ?? u.input_tokens ?? 0),
+      completion_tokens: (u.completion_tokens ?? u.output_tokens ?? 0)
+    };
   }
 
   async function send() {
@@ -275,7 +355,7 @@
     state.controller = new AbortController();
 
     try {
-      const res = await fetch(chatUrl(), {
+      const res = await fetch(protoUrl(), {
         method: 'POST',
         headers: headers(),
         body: JSON.stringify(body),
@@ -314,9 +394,10 @@
               let j;
               try { j = JSON.parse(payload); } catch (e) { continue; }
               if (!first) first = performance.now();
-              const d = j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content;
+              const d = streamDelta(j, proto());
               if (d) { out += d; setBubble(bot, out); }
-              if (j.usage) usage = j.usage;
+              const u = streamUsage(j, proto());
+              if (u) usage = normalizeUsage(u);
             }
           }
         }
@@ -325,10 +406,10 @@
         setMeta(bot, metaItems(rid, ch || chName, upModel, usage, t0, first));
       } else {
         const data = await res.json();
-        const msg = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '（空回复）';
+        const msg = parseNonStream(data, proto()) || '（空回复）';
         setBubble(bot, msg);
         bot.el.querySelector('.bubble').classList.remove('cursor');
-        setMeta(bot, metaItems(rid, ch || chName, upModel, data.usage, t0, 0));
+        setMeta(bot, metaItems(rid, ch || chName, upModel, normalizeUsage(data.usage), t0, 0));
       }
       $('title').textContent = $('model').value;
     } catch (e) {
@@ -363,6 +444,7 @@
   window.clearChat = clearChat;
   window.pickConn = pickConn;
   window.delConn = delConn;
+  window.onProtoChange = onProtoChange;
 
   $('input').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -371,6 +453,7 @@
     }
   });
   initModelCombo();
+  onProtoChange();
 
   restore();
   renderConns();

@@ -2,7 +2,7 @@
 
 一个用 Go 编写的 **OpenAI 兼容** 大模型网关：把 **DeepSeek**、**商汤日日新 SenseNova**、**腾讯云 WorkBuddy（代码助手）** 以及任意 OpenAI 兼容服务的 API Key 集中管理，对外只暴露一个 `base_url` + 一个网关密钥。
 
-- 统一协议：`POST /v1/chat/completions`（含 SSE 流式）、`GET /v1/models`
+- 统一协议：`POST /v1/chat/completions`（含 SSE 流式）、`POST /v1/messages`（Anthropic）、`POST /v1/responses`（OpenAI Responses / Codex）、`GET /v1/models`
 - 多渠道：同一模型可绑定多个平台/账号，按优先级 + 权重负载均衡
 - 自动故障转移：上游 429/5xx/超时自动切换下一个渠道
 - 零依赖运行：单二进制 + 一个 YAML 配置，内置 Web 管理页（无前端构建）
@@ -51,11 +51,13 @@ go build -o apitoken ./cmd/gateway
 | http://127.0.0.1:8080/channels | 渠道：渠道 CRUD（按名称/ID/模型名筛选、模型多时折叠、测试连通、拉取上游模型） |
 | http://127.0.0.1:8080/routes | 路由：模型 → 渠道顺序、模型映射（故障转移） |
 | http://127.0.0.1:8080/logs | 调用日志：筛选、分页、故障转移链路、导出 |
+| http://127.0.0.1:8080/runtime-logs | 运行日志：进程自身的运行日志（slog 输出，与控制台一致，内存保留最近 2000 条） |
 | http://127.0.0.1:8080/chat | 对话：像第三方客户端一样与网关对话，验证是否可用（模型下拉支持关键词搜索） |
 | http://127.0.0.1:8080/diagnostics | 测试：网关自检、渠道体检、出网诊断 |
 | http://127.0.0.1:8080/settings | 设置：修改网关密钥、路由、日志、超时（保存即生效） |
 | http://127.0.0.1:8080/v1 | OpenAI 兼容接口（网关密钥 `sk-gateway-0001`） |
 | http://127.0.0.1:8080/v1/messages | Anthropic Messages 兼容接口（同一把网关密钥，见 9.6） |
+| http://127.0.0.1:8080/v1/responses | OpenAI Responses 兼容接口（Codex CLI 等，见 9.7） |
 | http://127.0.0.1:8080/admin/… | 管理 API |
 | http://127.0.0.1:8080/healthz | 健康检查 |
 
@@ -253,6 +255,7 @@ routes:
 | --- | --- | --- |
 | POST | `/v1/chat/completions` | OpenAI 兼容对话（含 SSE），详见第 4 节 |
 | POST | `/v1/messages` | **Anthropic Messages 兼容对话**（含 SSE），详见第 9.6 节 |
+| POST | `/v1/responses` | **OpenAI Responses 兼容对话**（含 SSE，Codex CLI 等），详见第 9.7 节 |
 | GET | `/admin/api-info` | 版本、平台预设、路由策略、鉴权状态 |
 | GET | `/admin/channels` | 渠道列表（`?reveal=1` 返回完整 Key） |
 | POST | `/admin/channels` | 新增渠道（自动套用平台预设） |
@@ -271,6 +274,7 @@ routes:
 | GET | `/admin/logs/{request_id}` | 一次请求的全部尝试链路 |
 | GET | `/admin/logs/export?format=csv` | 导出 CSV（format=json 导出 JSON） |
 | DELETE | `/admin/logs` | 清空调用日志 |
+| GET | `/admin/runtime-logs` | 运行日志（进程 slog 输出，最新在前） |
 | GET | `/healthz` `/readyz` | 健康 / 就绪检查 |
 | GET | `/admin/settings` | 读取可热更新的配置（密钥脱敏） |
 | POST | `/admin/settings` | 保存设置：立即生效并写回 config.yaml（保留注释） |
@@ -315,19 +319,19 @@ routes:
 | `upstream.default_timeout` | `120s` | 渠道未单独指定 `timeout_sec` 时的超时 |
 | `upstream.connect_timeout` | `10s` | 上游连接超时 |
 | `upstream.keep_alive` | `30s` | 上游连接池 keep-alive |
-| `upstream.proxy_url` | 空 | 空=跟随 `HTTP_PROXY/HTTPS_PROXY`；`none`=强制直连；也可填代理地址（热更新） |
+| `upstream.proxy_url` | 空 | 全局兜底代理：空=跟随 `HTTP_PROXY/HTTPS_PROXY`；`none`=强制直连。推荐按渠道配置 `proxy_url`（渠道级优先） |
 | `ui.theme` | `auto` | 新设备默认主题：`auto`/`dark`/`light`（热更新） |
 
 除上表外，`routes` 与 `channels` 是列表结构，字段含义见第 3、5 节；渠道还支持
 `auth_style`（`bearer`/`header`/`query`）、`auth_header`、`extra_params`、`extra_headers`、
-`timeout_sec`、`note`。
+`timeout_sec`、`proxy_url`（该渠道专用上游代理：留空=跟随全局/环境变量，`none`=强制直连，或填代理地址）、`note`。
 
 ---
 
 ## 8. 常见问题
 
 **Q：返回 `404 Route Not Found`？**
-先在浏览器里「测试」渠道。若 curl 直连上游同样 404，说明是网络出口/代理问题；把 `upstream.proxy_url` 设为实际代理，或设为 `none` 强制直连。
+先在浏览器里「测试」渠道。若 curl 直连上游同样 404，说明是网络出口/代理问题；在该渠道里把「上游代理」设为实际代理，或设为 `none` 强制直连。
 
 **Q：上游 401 / Forbidden？**
 Key 无效或未生效。DeepSeek、商汤、腾讯 WorkBuddy 的 Key 各自独立，注意不要混用；腾讯还需确认企业版套餐与 API Key 所属企业。
@@ -427,7 +431,7 @@ Key 无效或未生效。DeepSeek、商汤、腾讯 WorkBuddy 的 Key 各自独�
 - 管理令牌变更后页面会自动把新令牌保存到浏览器，避免把自己挡在门外
 - **路由与重试**：路由策略、最大尝试渠道数、触发重试的状态码（勾选式）、流式 token 统计开关
 - **日志**：访问日志开关、内存保留条数（热更新会同时裁剪现有日志）、是否记录请求/响应摘要、摘要长度
-- **超时与出网**：非流式/流式超时、上游代理（留空=环境变量，none=强制直连）
+- **超时**：非流式/流式超时（上游代理已移到「渠道」页按渠道配置）
 - 只读区展示监听地址、配置文件/数据文件路径，并标注哪些字段需要重启才生效
 
 写回配置文件采用 YAML 节点增量合并：只改动变化的键，**原文件的中文注释与 channels/routes 等未涉及内容都会保留**。
@@ -496,6 +500,40 @@ OpenAI 兼容端点，响应再转回 Anthropic Messages（含 SSE 事件序列�
 如果你的客户端用 OpenAI 协议（含绝大多数第三方客户端），用 `/v1/chat/completions` 即可，
 不需要这个端点。
 
+### 9.7 OpenAI Responses 兼容入口（`/v1/responses`，Codex）
+
+OpenAI Codex CLI 等 coding agent 走的是 **Responses API**。这个端点让它们**无需任何改动**
+就能用上网关的路由、故障转移、用量统计与调用日志：
+
+```bash
+curl http://127.0.0.1:8080/v1/responses \
+  -H "Authorization: Bearer sk-gateway-0001" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"deepseek-chat","input":"你好","stream":true}'
+```
+
+在 Codex CLI 里只需把 base URL 指向网关（如 `OPENAI_BASE_URL=http://127.0.0.1:8080/v1`）。
+
+**上游不需要支持 Responses**：请求会被转换成 OpenAI Chat Completions 发往各渠道配置的
+OpenAI 兼容端点，响应再转回 Responses（含 SSE 事件序列 `response.created` →
+`output_text.delta` → `response.completed`）。
+
+已支持的能力：
+
+| 能力 | 说明 |
+| --- | --- |
+| 基础对话 / 流式 | `input`（字符串或 item 数组）↔ `messages`，正文为 `output_text` / `response.output_text.delta` |
+| `instructions` | 转成 OpenAI 的首条 system 消息 |
+| 工具调用 | Responses 扁平 `function` 工具 ↔ OpenAI `function`；`function_call` ↔ `tool_calls`；`function_call_output` → `role:tool` |
+| `tool_choice` | `auto` / `none` / `required` / 指定 function |
+| 推理 | `reasoning.effort` ↔ `reasoning_effort`，输出为 `reasoning` 项（排在正文之前） |
+| `max_output_tokens` | 映射为 OpenAI 的 `max_tokens` |
+| 多模态 | `input_image` ↔ `image_url` |
+| 用量统计 | `usage` 转成 `input_tokens` / `output_tokens`，计入看板与日志 |
+
+**严格校验**：不支持的字段会明确返回 400 并说明原因；无副作用但无法映射的字段
+（`store`、`metadata`、`service_tier` 等）会被丢弃，并记录在日志的 `protocol_convert` 里。
+
 ---
 
 ## 10. 项目结构
@@ -508,9 +546,10 @@ internal/store/        # 渠道路由解析、负载均衡、统计、访问日�
 internal/proxy/        # 转发核心（鉴权后共用）：渠道故障转移、SSE 转发、上游探测
   ├─ chat.go           #   OpenAI 兼容入口 + serve() 转发核心
   ├─ messages.go       #   Anthropic Messages 入口（请求转换后走同一个 serve）
-  ├─ relay.go          #   响应写回策略：OpenAI 直通 / Anthropic 转换
+  ├─ responses.go      #   OpenAI Responses 入口（Codex CLI 等，请求转换后走同一个 serve）
+  ├─ relay.go          #   响应写回策略：OpenAI 直通 / Anthropic / Responses 转换
   ├─ upstream.go       #   上游请求构造（鉴权、路径、extra_*）
-  └─ translate/        # 协议转换（Anthropic ⇄ OpenAI），独立可测
+  └─ translate/        # 协议转换（Anthropic/Responses ⇄ OpenAI），独立可测
 internal/admin/        # 管理 REST API（handler / settings / logs / diagnostics）
 internal/gateway/      # 路由组装与中间件（鉴权/CORS/恢复/请求 ID）+ 端到端测试
 internal/webui/        # 内嵌管理页面
@@ -518,6 +557,7 @@ internal/webui/        # 内嵌管理页面
   ├─ channels.html     #   渠道管理页
   ├─ routes.html       #   路由管理页
   ├─ logs.html         #   调用日志页
+  ├─ runtime_logs.html #   运行日志页
   ├─ chat.html         #   对话测试页
   ├─ diagnostics.html  #   自检/体检页
   ├─ settings.html     #   设置页
@@ -529,21 +569,24 @@ Makefile               # build / run / test / test-web / vet / fmt / clean
 
 ### 10.1 协议转换层
 
-两个入站协议（OpenAI、Anthropic）共用同一套转发核心，差异被收敛到 `responder` 接口：
+三个入站协议（OpenAI、Anthropic、Responses）共用同一套转发核心，差异被收敛到 `responder` 接口：
 
 ```
-客户端 ──┬─ POST /v1/chat/completions ──→ openAIResponder  ─┐
-         └─ POST /v1/messages ──→ translate.RequestToOpenAI ─┤
-                                                            ├─→ serve()：渠道候选、
-                                                                │   故障转移、统计、日志
-         ┌─ openAIResponder ←───────────────────────────────┤
-客户端 ←─└─ anthropicResponder ← translate.ResponseToAnthropic ┘
+客户端 ──┬─ POST /v1/chat/completions ──→ openAIResponder        ─┐
+         ├─ POST /v1/messages     ──→ translate.RequestToOpenAI   ┤
+         └─ POST /v1/responses    ──→ translate.RequestToChatCompletions ┤
+                                                                ├─→ serve()：渠道候选、
+                                                                    │   故障转移、统计、日志
+         ┌─ openAIResponder ←───────────────────────────────────┤
+客户端 ←─├─ anthropicResponder ← translate.ResponseToAnthropic    ┘
+         └─ responsesResponder ← translate.ResponseToResponses
 ```
 
 - 新增入站协议只需实现 `responder`，不必复制故障转移循环
 - `translate` 包不依赖网关其余部分，可单独测试（`internal/proxy/translate/*_test.go`）
-- Anthropic 流式需要重放 `message_start → content_block_* → message_delta → message_stop`
-  事件序列，注意 Anthropic **没有 `[DONE]`**，且 `thinking` 块必须排在正文之前
+- Anthropic 流式重放 `message_start → content_block_* → message_delta → message_stop`
+  事件序列（无 `[DONE]`，`thinking` 块必须排在正文之前）；Responses 流式重放
+  `response.created → output_item.added → output_text.delta → response.completed` 事件序列
 
 ### 10.2 前端的可搜索下拉（Combo 组件）
 

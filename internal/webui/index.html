@@ -6,6 +6,19 @@
 <title>apitoken · 大模型 API 网关</title>
 <link rel="stylesheet" href="/static/style.css" />
 <script>(function(){try{var t=localStorage.getItem('apitoken_theme')||'auto';if(t==='auto'){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';}document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+<style>
+  /* 控制台专属：指标卡片 + 聚合分析（互联网风格） */
+  .stat-card{display:flex;gap:12px;align-items:flex-start;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:15px 16px;position:relative;overflow:hidden;transition:transform .16s,box-shadow .16s,border-color .16s}
+  .stat-card:hover{transform:translateY(-2px);box-shadow:var(--shadow);border-color:var(--border)}
+  .stat-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent,var(--primary))}
+  .stat-icon{font-size:22px;line-height:1;margin-top:3px;flex:none}
+  .stat-body{min-width:0}
+  .stat-label{color:var(--muted);font-size:12px}
+  .stat-value{font-size:24px;font-weight:700;margin-top:3px;line-height:1.1;letter-spacing:-.3px}
+  .stat-sub{color:var(--muted);font-size:11px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .agg-card{background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:13px 15px;min-width:0}
+  .agg-title{font-size:12px;color:var(--muted);margin-bottom:12px;display:flex;align-items:center;gap:6px}
+</style>
 </head>
 <body>
 <header>
@@ -15,6 +28,7 @@
     <a href="/channels">渠道</a>
     <a href="/routes">路由</a>
     <a href="/logs">调用日志</a>
+    <a href="/runtime-logs">运行日志</a>
     <a href="/diagnostics">测试</a>
     <a href="/chat">对话</a>
     <a href="/settings">设置</a>
@@ -33,21 +47,13 @@
     <h2>聚合分析<span class="sp"></span><span class="muted" style="font-size:12px">基于全部调用日志（内存保留范围内）</span></h2>
     <div class="pad">
       <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr))">
-        <div>
-          <label>按模型（次数 / 平均延迟）</label>
-          <div class="bars" id="barModel"></div>
-        </div>
-        <div>
-          <label>按渠道（次数 / 平均延迟）</label>
-          <div class="bars" id="barChannel"></div>
-        </div>
-        <div>
-          <label>按状态码</label>
-          <div class="bars" id="barStatus"></div>
-        </div>
+        <div class="agg-card"><div class="agg-title">📦 按模型（次数 / 平均延迟）</div><div class="cols" id="barModel"></div></div>
+        <div class="agg-card"><div class="agg-title">🔌 按渠道（次数 / 平均延迟）</div><div class="cols" id="barChannel"></div></div>
+        <div class="agg-card"><div class="agg-title">🚦 按状态码</div><div class="cols" id="barStatus"></div></div>
+        <div class="agg-card"><div class="agg-title">🪙 按模型 Token 用量（↓输入 / ↑输出）</div><div class="cols" id="barToken"></div></div>
+        <div class="agg-card"><div class="agg-title">🪙 按渠道 Token 用量（↓输入 / ↑输出）</div><div class="cols" id="barChannelToken"></div></div>
       </div>
-      <label style="margin-top:14px">高频错误</label>
-      <div class="bars" id="barError"></div>
+      <div class="agg-card" style="margin-top:12px"><div class="agg-title">🔥 高频错误</div><div class="cols" id="barError"></div></div>
     </div>
   </section>
 </main>
@@ -68,15 +74,24 @@ async function refresh() {
 }
 
 function renderCards(s) {
-  $('cards').innerHTML = [
-    ['总请求', fmt(s.total_requests), '当前进程累计'],
-    ['成功率', s.total_requests ? (s.total_success * 100 / s.total_requests).toFixed(1) + '%' : '-', `${fmt(s.total_success)} 成功 / ${fmt(s.total_failed)} 失败`],
-    ['Token 用量', fmt(s.prompt_tokens + s.completion_tokens), `↓${fmt(s.prompt_tokens)} ↑${fmt(s.completion_tokens)}`],
-    ['平均延迟', fmtLatency(s.avg_latency_ms), '网关端到端'],
-    ['启用渠道', s.enabled_channels + ' / ' + s.channel_count, '含多平台账号'],
-    ['可路由模型', Object.keys(s.models || {}).length, '见 /v1/models'],
-    ['运行时长', fmtUptime(s.uptime_seconds), fmtTimeShort(s.started_at) + ' 启动']
-  ].map(([l, v, sub]) => `<div class="card"><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${sub}</div></div>`).join('');
+  const items = [
+    ['总请求', '📊', fmt(s.total_requests), '当前进程累计', 'var(--primary)'],
+    ['成功率', '✅', s.total_requests ? (s.total_success * 100 / s.total_requests).toFixed(1) + '%' : '-', `${fmt(s.total_success)} 成功 / ${fmt(s.total_failed)} 失败`, 'var(--ok)'],
+    ['Token 用量', '🪙', fmt(s.prompt_tokens + s.completion_tokens), `↓${fmt(s.prompt_tokens)} ↑${fmt(s.completion_tokens)}`, 'var(--warn)'],
+    ['平均延迟', '⚡', fmtLatency(s.avg_latency_ms), '网关端到端', 'var(--primary)'],
+    ['启用渠道', '🔌', s.enabled_channels + ' / ' + s.channel_count, '含多平台账号', 'var(--ok)'],
+    ['可路由模型', '🧩', Object.keys(s.models || {}).length, '见 /v1/models', 'var(--warn)'],
+    ['运行时长', '⏱️', fmtUptime(s.uptime_seconds), fmtTimeShort(s.started_at) + ' 启动', 'var(--muted)']
+  ];
+  $('cards').innerHTML = items.map(([l, icon, v, sub, accent]) =>
+    `<div class="stat-card" style="--accent:${accent}">
+      <div class="stat-icon">${icon}</div>
+      <div class="stat-body">
+        <div class="stat-label">${l}</div>
+        <div class="stat-value">${v}</div>
+        <div class="stat-sub">${sub}</div>
+      </div>
+    </div>`).join('');
 }
 
 // 聚合分析：复用 /admin/logs 的聚合统计（不带筛选条件 = 全部日志）。
@@ -85,10 +100,12 @@ async function renderAggregate() {
   try {
     const data = await api('/admin/logs?page=1&page_size=1');
     const s = data.stats || {};
-    renderBars('barModel', s.by_model, { showLatency: true });
-    renderBars('barChannel', s.by_channel, { showLatency: true });
-    renderBars('barStatus', s.by_status);
-    renderBars('barError', (s.top_errors || []).map(e => ({ name: e.name, count: e.count, failed: e.count })));
+    renderColumns('barModel', s.by_model, { showLatency: true });
+    renderColumns('barChannel', s.by_channel, { showLatency: true });
+    renderColumns('barStatus', s.by_status);
+    renderColumns('barToken', s.by_model, { showTokens: true });
+    renderColumns('barChannelToken', s.by_channel, { showTokens: true });
+    renderColumns('barError', (s.top_errors || []).map(e => ({ name: e.name, count: e.count, failed: e.count })));
   } catch (e) { /* 日志聚合失败不影响概览卡片 */ }
 }
 

@@ -53,6 +53,9 @@ func (s *Server) Handler() http.Handler {
 	// Anthropic Messages 兼容接口：请求与响应都按 Anthropic 协议，
 	// 上游仍走各渠道的 OpenAI 兼容端点，客户端无需任何改动即可接入。
 	mux.Handle("POST /v1/messages", s.clientAuth(s.proxy.Messages))
+	// OpenAI Responses 兼容接口（Codex CLI 等 coding agent 使用）：
+	// 请求与响应都按 Responses 协议，上游仍走 OpenAI 兼容端点。
+	mux.Handle("POST /v1/responses", s.clientAuth(s.proxy.Responses))
 	mux.Handle("GET /v1/models", s.clientAuth(s.proxy.ListModels))
 	mux.HandleFunc("GET /v1/models/{model}", s.clientAuth(func(w http.ResponseWriter, r *http.Request) {
 		want := r.PathValue("model")
@@ -93,6 +96,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /channels", webui.ChannelsHandler())
 	mux.Handle("GET /routes", webui.RoutesHandler())
 	mux.Handle("GET /logs", webui.LogsHandler())
+	mux.Handle("GET /runtime-logs", webui.RuntimeLogsHandler())
 	mux.Handle("GET /diagnostics", webui.DiagnosticsHandler())
 	mux.Handle("GET /chat", webui.ChatHandler())
 	mux.Handle("GET /settings", webui.SettingsHandler())

@@ -17,6 +17,7 @@
             <a href="/channels">渠道</a>
             <a href="/routes">路由</a>
             <a href="/logs" class="active">调用日志</a>
+            <a href="/runtime-logs">运行日志</a>
             <a href="/diagnostics">测试</a>
             <a href="/chat">对话</a>
             <a href="/settings">设置</a>
@@ -358,10 +359,10 @@
 
         function exportCsv() {
             // 导出走全量（后端不受分页 page_size 上限约束），query() 仅附带筛选条件
-            window.open('/admin/logs/export?format=csv&' + query(), '_blank');
+            downloadFile('/admin/logs/export?format=csv&' + query(), 'apitoken-logs.csv');
         }
         function exportJson() {
-            window.open('/admin/logs/export?format=json&' + query(), '_blank');
+            downloadFile('/admin/logs/export?format=json&' + query(), 'apitoken-logs.json');
         }
         async function clearLogs() {
             if (!confirm('确认清空全部调用日志？')) return;

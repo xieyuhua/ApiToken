@@ -262,13 +262,20 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, in relayRequest)
 
 // logConvert 记录协议转换耗时与被丢弃的字段（仅发生转换时输出）。
 func (h *Handler) logConvert(resp responder, modelName, channelID string) {
-	ar, ok := resp.(*anthropicResponder)
-	if !ok {
+	attrs := []any{"model", modelName, "channel", channelID}
+	switch r := resp.(type) {
+	case *anthropicResponder:
+		attrs = append(attrs, "protocol", "anthropic", "convert_ms", r.ConvertMs())
+		if len(r.dropped) > 0 {
+			attrs = append(attrs, "dropped", strings.Join(r.dropped, ","))
+		}
+	case *responsesResponder:
+		attrs = append(attrs, "protocol", "responses", "convert_ms", r.ConvertMs())
+		if len(r.dropped) > 0 {
+			attrs = append(attrs, "dropped", strings.Join(r.dropped, ","))
+		}
+	default:
 		return
-	}
-	attrs := []any{"model", modelName, "channel", channelID, "convert_ms", ar.ConvertMs()}
-	if len(ar.dropped) > 0 {
-		attrs = append(attrs, "dropped", strings.Join(ar.dropped, ","))
 	}
 	h.log.Info("protocol_convert", attrs...)
 }

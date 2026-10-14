@@ -23,6 +23,7 @@
     <a href="/channels">渠道</a>
     <a href="/routes">路由</a>
     <a href="/logs">调用日志</a>
+    <a href="/runtime-logs">运行日志</a>
     <a href="/diagnostics">测试</a>
     <a href="/chat">对话</a>
     <a href="/settings" class="active">设置</a>
@@ -165,7 +166,7 @@
   </section>
 
   <section>
-    <h2>超时与出网</h2>
+    <h2>超时</h2>
     <div class="pad grid2">
       <div>
         <label>非流式请求超时（秒）</label>
@@ -174,11 +175,6 @@
       <div>
         <label>流式请求超时（秒）</label>
         <input id="streamTimeout" type="number" min="1" />
-      </div>
-      <div style="grid-column:1/-1">
-        <label>上游代理（proxy_url）</label>
-        <input id="proxyUrl" placeholder="留空=遵循 HTTP_PROXY/HTTPS_PROXY；none=强制直连；或填 http://127.0.0.1:7890" />
-        <p class="hint">保存即生效，后续新建的上游连接使用新代理</p>
       </div>
     </div>
   </section>
@@ -227,7 +223,6 @@ async function load() {
     $('payloadLimit').value = s.payload_limit;
     $('requestTimeout').value = s.request_timeout;
     $('streamTimeout').value = s.stream_timeout;
-    $('proxyUrl').value = s.proxy_url || '';
     $('trustProxy').value = s.trust_proxy_headers ? 'true' : 'false';
     $('metaBox').innerHTML =
       row('监听地址', esc(d.meta.addr) + '（需重启）') +
@@ -318,7 +313,6 @@ async function save() {
     payload_limit: +$('payloadLimit').value,
     request_timeout: +$('requestTimeout').value,
     stream_timeout: +$('streamTimeout').value,
-    proxy_url: $('proxyUrl').value.trim(),
     trust_proxy_headers: $('trustProxy').value === 'true',
     theme: $('theme').value
   };

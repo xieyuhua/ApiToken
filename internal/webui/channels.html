@@ -15,6 +15,7 @@
     <a href="/channels" class="active">渠道</a>
     <a href="/routes">路由</a>
     <a href="/logs">调用日志</a>
+    <a href="/runtime-logs">运行日志</a>
     <a href="/diagnostics">测试</a>
     <a href="/chat">对话</a>
     <a href="/settings">设置</a>
@@ -79,6 +80,7 @@
       <div><label>优先级（越小越优先）</label><input id="f_priority" type="number" value="10" /></div>
       <div><label>权重</label><input id="f_weight" type="number" value="1" /></div>
       <div><label>超时（秒，0 用默认）</label><input id="f_timeout" type="number" value="0" /></div>
+      <div><label>上游代理（可选）</label><input id="f_proxy_url" placeholder="留空=跟随全局/环境变量；none=强制直连；或填代理地址" /></div>
       <div><label>状态</label><select id="f_enabled"><option value="true">启用</option><option value="false">停用</option></select></div>
       <div style="grid-column:1/-1"><label>支持的模型（逗号分隔，留空=放通全部）</label><input id="f_models" placeholder="deepseek-chat, deepseek-reasoner" /></div>
       <div style="grid-column:1/-1"><label>备注</label><input id="f_note" /></div>
@@ -249,7 +251,7 @@ function openDlg(id) {
   $('f_api_key').type = 'password';
   $('f_api_key').classList.remove('revealed');
   if (!id) {
-    ['f_id', 'f_name', 'f_base_url', 'f_models', 'f_note', 'f_auth_header'].forEach(i => $(i).value = '');
+    ['f_id', 'f_name', 'f_base_url', 'f_models', 'f_note', 'f_auth_header', 'f_proxy_url'].forEach(i => $(i).value = '');
     $('f_priority').value = 10; $('f_weight').value = 1; $('f_timeout').value = 0;
     $('f_enabled').value = 'true'; $('f_auth_style').value = 'bearer';
     onAuthChange();
@@ -261,6 +263,7 @@ function openDlg(id) {
       $('f_enabled').value = c.enabled ? 'true' : 'false';
       $('f_auth_style').value = c.auth_style || 'bearer';
       $('f_auth_header').value = c.auth_header || '';
+      $('f_proxy_url').value = c.proxy_url || '';
       $('f_note').value = c.note || '';
       onAuthChange();
     });
@@ -300,6 +303,7 @@ async function saveChannel() {
     priority: +$('f_priority').value || 0,
     weight: +$('f_weight').value || 1,
     timeout_sec: +$('f_timeout').value || 0,
+    proxy_url: $('f_proxy_url').value.trim(),
     enabled: $('f_enabled').value === 'true',
     note: $('f_note').value.trim()
   };
@@ -324,6 +328,7 @@ function channelDraft() {
     priority: +$('f_priority').value || 0,
     weight: +$('f_weight').value || 1,
     timeout_sec: +$('f_timeout').value || 0,
+    proxy_url: $('f_proxy_url').value.trim(),
     enabled: $('f_enabled').value === 'true',
     note: $('f_note').value.trim()
   };
@@ -369,7 +374,8 @@ async function loadUpstreamModels() {
       api_key: draft.api_key,
       auth_style: draft.auth_style,
       auth_header: draft.auth_header,
-      timeout_sec: draft.timeout_sec
+      timeout_sec: draft.timeout_sec,
+      proxy_url: draft.proxy_url
     });
     const r = await api('/admin/channels/models?' + q.toString());
     fetchedModels = r.models || [];

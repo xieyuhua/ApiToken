@@ -59,7 +59,9 @@ type Channel struct {
 	Priority int  `json:"priority" yaml:"priority"` // 数值越小优先级越高
 	Enabled  bool `json:"enabled" yaml:"enabled"`
 
-	TimeoutSec   int               `json:"timeout_sec,omitempty" yaml:"timeout_sec,omitempty"`
+	TimeoutSec int `json:"timeout_sec,omitempty" yaml:"timeout_sec,omitempty"`
+	// ProxyURL 该渠道专用的上游代理：留空=跟随全局 proxy_url / 环境变量；none 或 direct=强制直连；否则为代理地址。
+	ProxyURL     string            `json:"proxy_url,omitempty" yaml:"proxy_url,omitempty"`
 	ChatPath     string            `json:"chat_path,omitempty" yaml:"chat_path,omitempty"`
 	ExtraHeaders map[string]string `json:"extra_headers,omitempty" yaml:"extra_headers,omitempty"`
 	ExtraParams  map[string]any    `json:"extra_params,omitempty" yaml:"extra_params,omitempty"`
@@ -236,11 +238,13 @@ type LogSummary struct {
 
 // LogKV 聚合项。
 type LogKV struct {
-	Name           string `json:"name"`
-	Count          int64  `json:"count"`
-	Failed         int64  `json:"failed"`
-	TotalLatencyMS int64  `json:"total_latency_ms"`
-	AvgLatencyMS   int64  `json:"avg_latency_ms"`
+	Name             string `json:"name"`
+	Count            int64  `json:"count"`
+	Failed           int64  `json:"failed"`
+	TotalLatencyMS   int64  `json:"total_latency_ms"`
+	AvgLatencyMS     int64  `json:"avg_latency_ms"`
+	PromptTokens     int64  `json:"prompt_tokens"`
+	CompletionTokens int64  `json:"completion_tokens"`
 }
 
 // Snapshot 全局统计快照。
