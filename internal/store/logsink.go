@@ -48,6 +48,9 @@ type LogSink struct {
 	dropped atomic.Int64  // 因队列满而丢弃的条数
 	written atomic.Int64  // 已落盘条数
 	epoch   atomic.Uint64 // 清空日志的代际号，用于让在途批次自行丢弃
+	// warn 落盘管线的告警日志回调（func(string, ...any)）。挂在实例上而非包级全局，
+	// 避免多实例（如测试）互相覆盖 logger。
+	warn atomic.Value
 
 	stopOnce sync.Once
 	stopped  chan struct{}
@@ -128,16 +131,18 @@ func NewLogSink(opts LogSinkOptions) *LogSink {
 	return s
 }
 
-// logf 落盘管线的告警日志（避免与 Store 的 logger 形成循环依赖）。
-var logWarn = func(string, ...any) {}
-
+// SetLogger 设置落盘管线的告警日志回调（避免与 Store 的 logger 形成循环依赖）。
 func (s *LogSink) SetLogger(f func(string, ...any)) {
 	if f != nil {
-		logWarn = f
+		s.warn.Store(f)
 	}
 }
 
-func (s *LogSink) logf(format string, args ...any) { logWarn(format, args...) }
+func (s *LogSink) logf(format string, args ...any) {
+	if f, ok := s.warn.Load().(func(string, ...any)); ok && f != nil {
+		f(format, args...)
+	}
+}
 
 // Enqueue 非阻塞投递一条日志。
 //

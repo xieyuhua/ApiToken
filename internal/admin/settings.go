@@ -14,6 +14,8 @@ type SettingsView struct {
 	// 鉴权
 	ClientKeys []string `json:"client_keys"`
 	AdminToken string   `json:"admin_token"`
+	// TrustProxyHeaders 是否信任反向代理头作为来源 IP（nil = 不修改）
+	TrustProxyHeaders *bool `json:"trust_proxy_headers"`
 
 	// 路由（布尔项为指针：nil 表示不修改）
 	Strategy         string `json:"strategy"`
@@ -56,22 +58,23 @@ type SettingsMeta struct {
 func viewFromRuntime(rt *config.Runtime, level string) SettingsView {
 	cd := int(rt.Cooldown / time.Second)
 	return SettingsView{
-		ClientKeys:       append([]string(nil), rt.ClientKeys...),
-		AdminToken:       rt.AdminToken,
-		Strategy:         rt.Strategy,
-		MaxAttempts:      rt.MaxAttempts,
-		ForceStreamUsage: boolPtr(rt.ForceStreamUsage),
-		RetryStatus:      append([]int(nil), rt.RetryStatus...),
-		CooldownSeconds:  &cd,
-		AccessLog:        boolPtr(rt.AccessLog),
-		KeepLogs:         rt.KeepLogs,
-		RecordPayload:    boolPtr(rt.RecordPayload),
-		PayloadLimit:     rt.PayloadLimit,
-		LogLevel:         level,
-		RequestTimeout:   int(rt.RequestTimeout / time.Second),
-		StreamTimeout:    int(rt.StreamTimeout / time.Second),
-		ProxyURL:         rt.ProxyURL,
-		Theme:            rt.Theme,
+		ClientKeys:        append([]string(nil), rt.ClientKeys...),
+		AdminToken:        rt.AdminToken,
+		TrustProxyHeaders: boolPtr(rt.TrustProxyHeaders),
+		Strategy:          rt.Strategy,
+		MaxAttempts:       rt.MaxAttempts,
+		ForceStreamUsage:  boolPtr(rt.ForceStreamUsage),
+		RetryStatus:       append([]int(nil), rt.RetryStatus...),
+		CooldownSeconds:   &cd,
+		AccessLog:         boolPtr(rt.AccessLog),
+		KeepLogs:          rt.KeepLogs,
+		RecordPayload:     boolPtr(rt.RecordPayload),
+		PayloadLimit:      rt.PayloadLimit,
+		LogLevel:          level,
+		RequestTimeout:    int(rt.RequestTimeout / time.Second),
+		StreamTimeout:     int(rt.StreamTimeout / time.Second),
+		ProxyURL:          rt.ProxyURL,
+		Theme:             rt.Theme,
 	}
 }
 
@@ -100,7 +103,7 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 			ConfigFile: h.cfg.Path(), DataFile: h.cfg.DataFile(), StatsFile: h.store.StatsFile(), Addr: h.cfg.Server.Addr,
 			Version: model.Version, Uptime: h.store.Uptime().String(),
 			RestartNeeded: []string{"监听地址 addr", "数据目录 data_dir", "单次请求体积上限 max_body_mb", "上游连接池参数", "访问日志落盘开关 file_enabled"},
-			HotFields:     []string{"网关密钥 / 管理令牌", "路由策略与重试", "渠道失败冷却", "日志设置", "请求超时", "出网代理"},
+			HotFields:     []string{"网关密钥 / 管理令牌", "来源 IP 解析", "路由策略与重试", "渠道失败冷却", "日志设置", "请求超时", "出网代理"},
 		},
 		"admin_token_set": rt.AdminToken != "",
 		"revealed":        revealed,
@@ -137,6 +140,9 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(in.AdminToken) != "" && !strings.Contains(in.AdminToken, "*") {
 		next.AdminToken = strings.TrimSpace(in.AdminToken)
+	}
+	if in.TrustProxyHeaders != nil {
+		next.TrustProxyHeaders = *in.TrustProxyHeaders
 	}
 
 	// 路由（留空表示不修改）

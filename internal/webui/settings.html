@@ -69,6 +69,14 @@
             「查看明文」会在浏览器中显示已保存的完整密钥，仅在受信任的环境下使用，注意截图与 shoulder surfing。
           </div>
         </div>
+        <div>
+          <label>来源 IP 解析</label>
+          <select id="trustProxy">
+            <option value="true">信任反向代理头（X-Forwarded-For / X-Real-IP）</option>
+            <option value="false">仅取直连对端（公网直连防伪造）</option>
+          </select>
+          <p class="hint">网关挂在 Nginx 等反向代理后应开启；直接暴露公网时建议关闭，避免客户端伪造来源 IP</p>
+        </div>
       </div>
     </div>
   </section>
@@ -168,7 +176,7 @@
       <div style="grid-column:1/-1">
         <label>上游代理（proxy_url）</label>
         <input id="proxyUrl" placeholder="留空=遵循 HTTP_PROXY/HTTPS_PROXY；none=强制直连；或填 http://127.0.0.1:7890" />
-        <p class="hint">修改后新建的上游连接生效（已建立的连接会复用旧设置）</p>
+        <p class="hint">保存即生效，后续新建的上游连接使用新代理</p>
       </div>
     </div>
   </section>
@@ -218,6 +226,7 @@ async function load() {
     $('requestTimeout').value = s.request_timeout;
     $('streamTimeout').value = s.stream_timeout;
     $('proxyUrl').value = s.proxy_url || '';
+    $('trustProxy').value = s.trust_proxy_headers ? 'true' : 'false';
     $('metaBox').innerHTML =
       row('监听地址', esc(d.meta.addr) + '（需重启）') +
       row('配置文件', esc(d.meta.config_file) + '（保存会写回此文件）') +
@@ -308,6 +317,7 @@ async function save() {
     request_timeout: +$('requestTimeout').value,
     stream_timeout: +$('streamTimeout').value,
     proxy_url: $('proxyUrl').value.trim(),
+    trust_proxy_headers: $('trustProxy').value === 'true',
     theme: $('theme').value
   };
   try {

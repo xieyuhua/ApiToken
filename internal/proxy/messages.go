@@ -23,7 +23,7 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDOf(r)
 	entry := model.LogEntry{
 		Time: start, RequestID: reqID, Method: r.Method, Path: r.URL.Path,
-		ClientIP: clientIP(r), UserAgent: logUA(r),
+		ClientIP: clientIP(r, h.cfg.RT().TrustProxyHeaders), UserAgent: logUA(r),
 	}
 
 	if r.Method != http.MethodPost {

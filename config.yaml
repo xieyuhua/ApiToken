@@ -10,6 +10,9 @@ security:
   client_keys:
     - xieyuhua
   admin_token: xieyuhua
+  # 是否信任反向代理头（X-Forwarded-For / X-Real-IP）作为来源 IP（默认 true）。
+  # 网关直接暴露公网时建议设为 false，避免客户端伪造来源 IP。
+  # trust_proxy_headers: true
 routing:
   strategy: priority_round_robin
   max_attempts: 3

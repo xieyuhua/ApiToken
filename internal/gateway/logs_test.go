@@ -11,7 +11,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/demo1/apitoken/internal/config"
+	"github.com/demo1/apitoken/internal/gateway"
 	"github.com/demo1/apitoken/internal/model"
+	"github.com/demo1/apitoken/internal/store"
 )
 
 // TestLogQueryFilterPagingAndExport 覆盖分页、筛选、聚合、详情、导出与清空。
@@ -472,5 +475,49 @@ func TestLogRecordsClientIPAndUserAgent(t *testing.T) {
 	head, _, _ := strings.Cut(rec.Body.String(), "\n")
 	if !strings.Contains(head, "client_ip") || !strings.Contains(head, "user_agent") {
 		t.Fatalf("CSV 表头缺少来源字段: %s", head)
+	}
+}
+
+// TestClientIPIgnoresProxyHeadersWhenDisabled 关闭 trust_proxy_headers 后，
+// 来源 IP 应取直连对端地址，忽略客户端伪造的 X-Forwarded-For。
+func TestClientIPIgnoresProxyHeadersWhenDisabled(t *testing.T) {
+	mock := newMock(false)
+	defer mock.srv.Close()
+
+	dir := t.TempDir()
+	off := false
+	cfg := &config.Config{
+		Server:   config.ServerConfig{Addr: ":0", DataDir: dir, MaxBodyMB: 8},
+		Security: config.SecurityConfig{ClientKeys: []string{"sk-test"}, AdminToken: "adm-test", TrustProxyHeaders: &off},
+		Routing:  config.RoutingConfig{Strategy: "priority_round_robin", MaxAttempts: 3, RetryStatus: []int{429, 500, 502, 503}},
+		Logging:  config.LoggingConfig{Level: "error", KeepLogs: 100, RecordPayload: false, FileEnabled: boolPtrCfg(false)},
+		Channels: []model.Channel{{
+			ID: "c1", Name: "正常", BaseURL: mock.srv.URL + "/v1", APIKey: "k",
+			Models: []string{"mock-chat"}, Priority: 1, Weight: 1, Enabled: true,
+		}},
+	}
+	st, err := store.New(cfg, testLogger())
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(st.CloseLogs)
+	h := gateway.New(cfg, st, testLogger()).Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"mock-chat","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer sk-test")
+	req.Header.Set("X-Forwarded-For", "203.0.113.7")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("请求失败: %d %s", rec.Code, rec.Body.String())
+	}
+
+	items := firstLogItems(t, h, 1)
+	if len(items) != 1 {
+		t.Fatalf("应有 1 条日志，实际 %d", len(items))
+	}
+	if items[0].ClientIP == "203.0.113.7" {
+		t.Fatalf("关闭信任代理头后不应取 X-Forwarded-For，实际 ClientIP=%q", items[0].ClientIP)
 	}
 }

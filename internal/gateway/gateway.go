@@ -2,10 +2,14 @@
 package gateway
 
 import (
+	"bufio"
 	"crypto/subtle"
 	"encoding/json"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -167,9 +171,14 @@ func matchAny(token string, keys []string) bool {
 
 func requestIDMW(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if id := r.Header.Get("X-Request-Id"); id != "" {
-			w.Header().Set("X-Request-Id", id)
+		id := r.Header.Get("X-Request-Id")
+		if id == "" {
+			// 客户端未带 ID 时生成一个并写回请求头，保证代理、日志与响应头
+			// 使用同一个 ID，观测链路统一（覆盖 /v1/models、/healthz 等非代理路径）。
+			id = proxy.NewRequestID()
+			r.Header.Set("X-Request-Id", id)
 		}
+		w.Header().Set("X-Request-Id", id)
 		next.ServeHTTP(w, r)
 	})
 }
@@ -185,11 +194,15 @@ func securityHeaders(next http.Handler) http.Handler {
 
 func corsMW(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := w.Header()
-		h.Set("Access-Control-Allow-Origin", "*")
-		h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Api-Key, X-Admin-Token, X-Request-Id")
-		h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		h.Set("Access-Control-Max-Age", "86400")
+		// 管理接口不开放跨域：仅数据面（/v1/* 等）允许，且不放行 X-Admin-Token，
+		// 避免任意网页脚本对管理接口发起带令牌的跨域请求。
+		if !strings.HasPrefix(r.URL.Path, "/admin/") {
+			h := w.Header()
+			h.Set("Access-Control-Allow-Origin", "*")
+			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Api-Key, X-Request-Id")
+			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+			h.Set("Access-Control-Max-Age", "86400")
+		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -224,16 +237,52 @@ func (w *statusWriter) Flush() {
 	}
 }
 
+// ReadFrom 把底层 ResponseWriter 的 io.ReaderFrom 能力透传出去，
+// 静态文件等场景可走 sendfile 零拷贝，同时保证状态与字节计数准确。
+func (w *statusWriter) ReadFrom(r io.Reader) (int64, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	if rf, ok := w.ResponseWriter.(io.ReaderFrom); ok {
+		n, err := rf.ReadFrom(r)
+		w.bytes += int(n)
+		return n, err
+	}
+	// 底层不支持时退化为普通拷贝，直接写底层避免 io.Copy 再次命中本 ReadFrom 造成递归
+	n, err := io.Copy(w.ResponseWriter, r)
+	w.bytes += int(n)
+	return n, err
+}
+
+// Hijack 透传底层连接劫持能力（WebSocket 等需要）。
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hj, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return hj.Hijack()
+	}
+	return nil, nil, http.ErrNotSupported
+}
+
+// Push 透传 HTTP/2 Server Push 能力。
+func (w *statusWriter) Push(target string, opts *http.PushOptions) error {
+	if p, ok := w.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}
+
 func recoverMW(log *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sw := &statusWriter{ResponseWriter: w}
+		start := time.Now()
 		defer func() {
 			if rec := recover(); rec != nil {
-				log.Error("panic", "path", r.URL.Path, "panic", rec)
-				proxy.WriteError(w, http.StatusInternalServerError, "internal_error", "网关内部错误", "")
+				log.Error("panic", "path", r.URL.Path, "panic", rec, "stack", string(debug.Stack()))
+				// 响应头可能已写出（流式中途 panic），此时无法再写 500，避免重复写头
+				if sw.status == 0 {
+					proxy.WriteError(w, http.StatusInternalServerError, "internal_error", "网关内部错误", "")
+				}
 			}
 		}()
-		start := time.Now()
-		sw := &statusWriter{ResponseWriter: w}
 		next.ServeHTTP(sw, r)
 		if log != nil && r.URL.Path != "/" {
 			log.Debug("request", "method", r.Method, "path", r.URL.Path,

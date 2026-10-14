@@ -294,6 +294,7 @@ routes:
 | `server.data_dir` | `./data` | 数据目录（`gateway.json` 渠道/路由、`stats.json` 统计、`logs/` 访问日志） |
 | `security.client_keys` | 空 | 客户端密钥；留空 = 不校验（仅内网） |
 | `security.admin_token` | 空 | 管理令牌；留空 = 管理接口不校验 |
+| `security.trust_proxy_headers` | `true` | 是否信任反向代理头（`X-Forwarded-For` / `X-Real-IP`）作为来源 IP（热更新）。网关挂在反向代理后保持 `true`；直接暴露公网时建议设 `false`，避免客户端伪造来源 IP |
 | `routing.strategy` | `priority_round_robin` | 路由策略，见第 5 节（热更新） |
 | `routing.max_attempts` | `3` | 单请求最多尝试的渠道数（热更新） |
 | `routing.retry_status` | `[408,409,425,429,500,502,503,504,529]` | 命中这些状态码才切换渠道（热更新） |
@@ -358,7 +359,8 @@ Key 无效或未生效。DeepSeek、商汤、腾讯 WorkBuddy 的 Key 各自独�
 
 - 统计卡：命中条数、成功率、故障转移次数、Token 用量（≥100 万显示为 M、≥10 亿显示为 B）、平均/P95 延迟
 - 明细表：时间、模型（含映射后的上游模型）、渠道/平台、流式/普通、状态码、耗时、尝试次数、Token、
-  **来源 IP**（优先取 `X-Forwarded-For` 首跳）与 **User-Agent**（列内截断显示、悬停看全文）、错误或响应摘要
+  **来源 IP**（`security.trust_proxy_headers` 开启时优先取 `X-Forwarded-For` 首跳，关闭时取直连对端）与
+  **User-Agent**（列内截断显示、悬停看全文）、错误或响应摘要
 - 筛选：模型、渠道、成功/失败/具体状态码、流式、关键字（Request ID / 错误 / 内容 / 来源 IP / User-Agent）
 - 详情弹窗：按 Request ID 展示**每一次上游尝试**（渠道、端点、状态、耗时、错误、请求/响应摘要），便于复盘故障转移
 - 聚合分析：按模型 / 渠道 / 状态码的次数与平均延迟、高频错误 Top 10

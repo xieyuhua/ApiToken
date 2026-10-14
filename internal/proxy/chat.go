@@ -70,7 +70,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDOf(r)
 	entry := model.LogEntry{
 		Time: start, RequestID: reqID, Method: r.Method, Path: r.URL.Path,
-		ClientIP: clientIP(r), UserAgent: logUA(r),
+		ClientIP: clientIP(r, h.cfg.RT().TrustProxyHeaders), UserAgent: logUA(r),
 	}
 
 	if r.Method != http.MethodPost {
@@ -325,9 +325,14 @@ func (h *Handler) relayJSON(w http.ResponseWriter, resp *http.Response, reqID st
 	rp responder) (relayResult, *upstreamError) {
 
 	var res relayResult
-	data, err := io.ReadAll(resp.Body)
+	// 非流式响应整体读进内存再解析用量/摘要，必须设上限：
+	// 异常或恶意上游返回超大 body 会把网关内存撑爆。
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxRelayBody+1))
 	if err != nil {
 		return res, &upstreamError{Transport: err}
+	}
+	if int64(len(data)) > maxRelayBody {
+		return res, &upstreamError{Transport: fmt.Errorf("上游响应体超过 %dMB，已拒绝", maxRelayBody>>20)}
 	}
 	res.Usage = ParseUsage(data)
 	// 摘要取上游原文（转换前的诊断价值更高）
@@ -488,12 +493,17 @@ func pickCT(ct string) string {
 	return ct
 }
 
-func clientIP(r *http.Request) string {
-	if v := r.Header.Get("X-Forwarded-For"); v != "" {
-		return strings.TrimSpace(strings.Split(v, ",")[0])
-	}
-	if v := r.Header.Get("X-Real-IP"); v != "" {
-		return v
+// clientIP 提取来源 IP。trustProxy 为 true 时优先取反向代理头
+// （X-Forwarded-For 首跳 / X-Real-IP）；为 false 时只取直连对端地址，
+// 防止网关直接暴露公网时客户端伪造来源 IP。
+func clientIP(r *http.Request, trustProxy bool) string {
+	if trustProxy {
+		if v := r.Header.Get("X-Forwarded-For"); v != "" {
+			return strings.TrimSpace(strings.Split(v, ",")[0])
+		}
+		if v := r.Header.Get("X-Real-IP"); v != "" {
+			return v
+		}
 	}
 	host := r.RemoteAddr
 	if i := strings.LastIndex(host, ":"); i > 0 {
@@ -501,6 +511,10 @@ func clientIP(r *http.Request) string {
 	}
 	return host
 }
+
+// maxRelayBody 非流式上游响应的最大读取字节数。请求体有 currentMaxBody 限制，
+// 响应体同样需要上限，防止异常上游返回超大 body 撑爆内存。
+const maxRelayBody = 64 << 20
 
 // logUAMaxRunes 日志里 User-Agent 的最大长度（按 rune 计），超长截断防止脏数据撑爆日志。
 const logUAMaxRunes = 120

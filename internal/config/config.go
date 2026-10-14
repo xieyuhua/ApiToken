@@ -50,6 +50,8 @@ type Runtime struct {
 	// 鉴权
 	ClientKeys []string
 	AdminToken string
+	// TrustProxyHeaders 是否信任反向代理头（X-Forwarded-For / X-Real-IP）作为来源 IP。
+	TrustProxyHeaders bool
 
 	// 路由
 	Strategy         string
@@ -127,6 +129,10 @@ type ServerConfig struct {
 type SecurityConfig struct {
 	ClientKeys []string `yaml:"client_keys"`
 	AdminToken string   `yaml:"admin_token"`
+	// TrustProxyHeaders 是否信任反向代理头（X-Forwarded-For / X-Real-IP）作为来源 IP。
+	// nil = 未配置（默认信任，兼容旧行为）；显式 false = 只取直连对端地址，
+	// 防止网关直接暴露公网时客户端伪造来源 IP。
+	TrustProxyHeaders *bool `yaml:"trust_proxy_headers"`
 }
 
 // RoutingConfig 路由策略配置。
@@ -220,12 +226,13 @@ func Load(path string) (*Config, error) {
 // runtimeFromFields 从配置字段构造运行时配置。
 func (c *Config) runtimeFromFields() *Runtime {
 	rt := &Runtime{
-		ClientKeys:       append([]string(nil), c.Security.ClientKeys...),
-		AdminToken:       c.Security.AdminToken,
-		Strategy:         c.Routing.Strategy,
-		MaxAttempts:      c.Routing.MaxAttempts,
-		RetryStatus:      append([]int(nil), c.Routing.RetryStatus...),
-		ForceStreamUsage: c.Routing.ForceStreamUsage,
+		ClientKeys:        append([]string(nil), c.Security.ClientKeys...),
+		AdminToken:        c.Security.AdminToken,
+		TrustProxyHeaders: true, // 默认信任（兼容旧行为），下方按显式配置覆盖
+		Strategy:          c.Routing.Strategy,
+		MaxAttempts:       c.Routing.MaxAttempts,
+		RetryStatus:       append([]int(nil), c.Routing.RetryStatus...),
+		ForceStreamUsage:  c.Routing.ForceStreamUsage,
 		// Cooldown 在下方按「是否显式配置」单独处理（nil 与 0 语义不同）
 		AccessLog:      c.Logging.AccessLog,
 		KeepLogs:       c.Logging.KeepLogs,
@@ -254,6 +261,10 @@ func (c *Config) runtimeFromFields() *Runtime {
 	if rt.Strategy == "" {
 		rt.Strategy = "priority_round_robin"
 	}
+	// 是否信任反向代理头：未配置时默认信任（兼容旧行为），显式 false 关闭
+	if c.Security.TrustProxyHeaders != nil {
+		rt.TrustProxyHeaders = *c.Security.TrustProxyHeaders
+	}
 	// 未显式配置冷却时给一个保守默认值；显式配 0 表示关闭冷却（保留旧行为）。
 	if c.Routing.Cooldown != nil {
 		rt.Cooldown = c.Routing.Cooldown.D()
@@ -267,6 +278,7 @@ func (c *Config) runtimeFromFields() *Runtime {
 func (c *Config) syncFields(rt *Runtime) {
 	c.Security.ClientKeys = append([]string(nil), rt.ClientKeys...)
 	c.Security.AdminToken = rt.AdminToken
+	c.Security.TrustProxyHeaders = boolPtr(rt.TrustProxyHeaders)
 	c.Routing.Strategy = rt.Strategy
 	c.Routing.MaxAttempts = rt.MaxAttempts
 	c.Routing.RetryStatus = append([]int(nil), rt.RetryStatus...)
@@ -358,6 +370,8 @@ func durationPtr(d time.Duration) *Duration {
 	return &v
 }
 
+func boolPtr(b bool) *bool { return &b }
+
 // DefaultPayloadLimit 单条日志每侧保存的摘要字符数上限。
 // 2000 偏小（长回复常被腰斩），提高到 8000；仍可通过设置页热更新调整。
 const DefaultPayloadLimit = 8000
@@ -420,9 +434,10 @@ func Save(c *Config) error {
 	}
 	rt := c.RT()
 	view := saveView{
-		Server:   c.Server,
-		UI:       UIConfig{Theme: rt.Theme},
-		Security: SecurityConfig{ClientKeys: append([]string(nil), rt.ClientKeys...), AdminToken: rt.AdminToken},
+		Server: c.Server,
+		UI:     UIConfig{Theme: rt.Theme},
+		Security: SecurityConfig{ClientKeys: append([]string(nil), rt.ClientKeys...), AdminToken: rt.AdminToken,
+			TrustProxyHeaders: boolPtr(rt.TrustProxyHeaders)},
 		Routing: RoutingConfig{
 			Strategy: rt.Strategy, MaxAttempts: rt.MaxAttempts,
 			ForceStreamUsage: rt.ForceStreamUsage, RetryStatus: append([]int(nil), rt.RetryStatus...),

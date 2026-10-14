@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -47,16 +48,9 @@ func NewClient(cfg *config.Config) *Client {
 		TLSHandshakeTimeout:   15 * time.Second,
 		ExpectContinueTimeout: time.Second,
 		ForceAttemptHTTP2:     true,
-	}
-	if p := strings.TrimSpace(cfg.Upstream.ProxyURL); p != "" {
-		if u, err := url.Parse(p); err == nil {
-			transport.Proxy = http.ProxyURL(u)
-		}
-	}
-	// 强制直连模式：忽略系统环境变量中的 HTTP_PROXY/HTTPS_PROXY
-	if strings.EqualFold(strings.TrimSpace(cfg.Upstream.ProxyURL), "none") ||
-		strings.EqualFold(strings.TrimSpace(cfg.Upstream.ProxyURL), "direct") {
-		transport.Proxy = nil
+		// Proxy 做成「每次请求读最新运行时配置」的闭包：设置页改 proxy_url 后
+		// 立即对后续请求生效，无需重建 Transport 或重启进程。
+		Proxy: func(req *http.Request) (*url.URL, error) { return proxyFor(cfg, req) },
 	}
 	return &Client{
 		cfg:  cfg,
@@ -207,7 +201,7 @@ func (h *Handler) BuildRequestOpts(ctx context.Context, cand model.Candidate, pa
 	for k, v := range ch.ExtraParams {
 		body[k] = v
 	}
-	forceUsage := (opts.ForceUsage || h.cfg.Routing.ForceStreamUsage) && !opts.DisableStreamOptions
+	forceUsage := (opts.ForceUsage || h.cfg.RT().ForceStreamUsage) && !opts.DisableStreamOptions
 	if stream && forceUsage {
 		if so, ok := body["stream_options"].(map[string]any); ok {
 			so["include_usage"] = true
@@ -261,6 +255,27 @@ func sanitizeUA(ua string) string {
 		}
 		return r
 	}, ua)
+}
+
+// proxyFor 根据运行时 proxy_url 解析本次请求的代理：
+//   - 空：跟随环境变量 HTTP_PROXY/HTTPS_PROXY（与 http.Transport 默认一致）
+//   - none / direct：强制直连（返回 nil, nil）
+//   - 其他：作为固定代理地址
+//
+// 每次请求都读取 cfg.RT()，保证设置页修改 proxy_url 后立即对后续请求生效。
+func proxyFor(cfg *config.Config, req *http.Request) (*url.URL, error) {
+	p := strings.TrimSpace(cfg.RT().ProxyURL)
+	switch {
+	case p == "":
+		return http.ProxyFromEnvironment(req)
+	case strings.EqualFold(p, "none"), strings.EqualFold(p, "direct"):
+		return nil, nil
+	default:
+		if u, err := url.Parse(p); err == nil {
+			return u, nil
+		}
+		return http.ProxyFromEnvironment(req)
+	}
 }
 
 // DefaultChatPath 默认的 OpenAI 兼容对话路径。
@@ -355,11 +370,14 @@ func truncateFull(s string, n int) (string, int) {
 	return s[:cut] + fmt.Sprintf("... [已截断，原始 %d 字]", total), total
 }
 
+// idFallbackSeq 随机源异常时的进程内自增序号，避免同纳秒时间戳撞 ID。
+var idFallbackSeq atomic.Uint64
+
 // NewRequestID 生成请求 ID。
 func NewRequestID() string {
 	b := make([]byte, 12)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+		return fmt.Sprintf("chatcmpl-%d-%d", time.Now().UnixNano(), idFallbackSeq.Add(1))
 	}
 	return "chatcmpl-" + hex.EncodeToString(b)
 }
