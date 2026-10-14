@@ -399,6 +399,7 @@ func (h *Handler) relayStream(w http.ResponseWriter, resp *http.Response, cand m
 	var acc strings.Builder
 	limit := h.payloadLimit()
 	collect := h.recordPayload()
+	doneSent := false
 	for {
 		line, readErr := reader.ReadString('\n')
 		if line != "" {
@@ -423,15 +424,27 @@ func (h *Handler) relayStream(w http.ResponseWriter, resp *http.Response, cand m
 					return res, nil
 				}
 				if isDone {
+					doneSent = true
 					break
 				}
 			}
 		}
 		if readErr != nil {
-			if readErr != io.EOF {
+			// io.ErrUnexpectedEOF：上游发送最后一块数据后、未以换行结尾就关闭了连接。
+			// 该块内容已在上方处理，通常只是缺末尾换行，不算真正中断，故不告警。
+			// 真正的异常（超时、连接重置等）才记录告警。
+			if readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
 				h.log.Warn("流式转发中断", "channel", cand.ID, "err", readErr)
 			}
 			break
+		}
+	}
+	// 上游未以 [DONE] 正常结束（缺末尾换行 / 提前关闭）：OpenAI 直通依赖上游的 data: [DONE]，
+	// 这里补发一个，避免客户端一直等待收尾标记而报「流中断」。
+	// Anthropic / Responses 的 End() 会自行补齐收尾事件，无需处理。
+	if !doneSent {
+		if _, isOpenAI := rp.(openAIResponder); isOpenAI {
+			write(writer.Line("", true))
 		}
 	}
 	// 收尾：OpenAI 直通为空；Anthropic 需补 content_block_stop + message_delta + message_stop
