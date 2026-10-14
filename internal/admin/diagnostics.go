@@ -89,8 +89,8 @@ func (h *Handler) diagnosticsOverview(w http.ResponseWriter, _ *http.Request) {
 		"summary":   sum,
 		"healthy":   sum.Fail == 0,
 		"channels":  len(h.enabledChannels()),
-		"logs_kept": len(h.store.Logs(0)),
-		"uptime":    h.store.Uptime().String(),
+		"logs_kept": h.store.LogsCount(),
+		"uptime":    h.store.UptimeString(),
 		"config":    h.cfg.Path(),
 		"data_file": h.cfg.DataFile(),
 	})

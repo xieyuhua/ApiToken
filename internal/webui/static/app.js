@@ -127,6 +127,15 @@ function fmtLatency(ms) {
   if (ms == null) return '-';
   return ms >= 1000 ? (ms / 1000).toFixed(2) + ' s' : ms + ' ms';
 }
+/* 运行时长（秒）→ 中文可读格式，与后端 FormatUptime 保持一致 */
+function fmtUptime(secs) {
+  if (secs == null || secs < 0) return '-';
+  secs = Math.floor(secs);
+  if (secs < 60) return secs + ' 秒';
+  if (secs < 3600) return Math.floor(secs / 60) + ' 分 ' + (secs % 60) + ' 秒';
+  if (secs < 86400) return Math.floor(secs / 3600) + ' 小时 ' + Math.floor((secs % 3600) / 60) + ' 分';
+  return Math.floor(secs / 86400) + ' 天 ' + Math.floor((secs % 86400) / 3600) + ' 小时';
+}
 function statusPill(code) {
   const cls = code >= 200 && code < 300 ? 'on' : (code >= 500 || code === 0 ? 'unhealthy' : 'warn');
   return `<span class="pill ${cls}">${code || '-'}</span>`;

@@ -62,7 +62,7 @@ go build -o apitoken ./cmd/gateway
 
 命令行参数：`-config`（配置路径）、`-addr`（覆盖监听地址）、`-version`。
 
-> 渠道/路由的改动会持久化到 `data/gateway.json`，重启后依然生效；配置文件里新增的渠道会自动补进来。
+> 渠道/路由的改动会持久化到 `data/gateway.json`，重启后依然生效；配置文件的 `channels`/`routes` 仅在首次启动（尚无数据文件）时作为初始值，之后一律以数据文件为准（删除渠道后重启不会从配置「复活」）。
 
 ---
 
@@ -252,7 +252,6 @@ routes:
 | POST | `/v1/chat/completions` | OpenAI 兼容对话（含 SSE），详见第 4 节 |
 | POST | `/v1/messages` | **Anthropic Messages 兼容对话**（含 SSE），详见第 9.6 节 |
 | GET | `/admin/api-info` | 版本、平台预设、路由策略、鉴权状态 |
-| GET | `/admin/config` | 当前配置（密钥脱敏） |
 | GET | `/admin/channels` | 渠道列表（`?reveal=1` 返回完整 Key） |
 | POST | `/admin/channels` | 新增渠道（自动套用平台预设） |
 | GET/PUT/PATCH/DELETE | `/admin/channels/{id}` | 查看 / 全量更新 / 局部更新 / 删除 |
@@ -765,7 +764,7 @@ flowchart TD
 
 关键点：
 - `validate()` 会校验渠道 id 唯一、`base_url` 非空，并 `MkdirAll(data_dir)`（`config/config.go:380`）；
-- `store.load()` 若发现配置里新增了渠道，只补进内存，**不覆盖**已在 `gateway.json` 里的改动；
+- `store.load()` 仅在数据文件不存在（或损坏）时用配置文件播种；数据文件存在则完全以它为准，不把配置里的渠道补进内存（避免删除渠道后被「复活」）；
 - 全局唯一的后台协程就是 `main.go:71` 的 `ListenAndServe`。
 
 ### 12.2 数据面主链路

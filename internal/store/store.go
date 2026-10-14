@@ -89,7 +89,8 @@ func New(cfg *config.Config, log *slog.Logger) (*Store, error) {
 	}
 	// 启动日志落盘管道；若配置为纯内存模式，此处返回 nil 并退化为直接入缓冲
 	s.sink = newLogSink(cfg, s.logs, log)
-	if err := s.load(); err != nil {
+	seeded, err := s.load()
+	if err != nil {
 		return nil, err
 	}
 	// 统计恢复：渠道已就绪后再灌入历史统计
@@ -97,7 +98,10 @@ func New(cfg *config.Config, log *slog.Logger) (*Store, error) {
 	s.loadStats()
 	s.statsStop = make(chan struct{})
 	go s.statsFlushLoop()
-	if len(s.channels) == 0 {
+	// 仅当数据文件不存在（首次启动）或损坏时，用配置文件的 channels/routes 播种。
+	// 一旦数据文件存在，就以它为准：不再把 config.yaml 里的渠道补进内存，
+	// 否则「管理界面删除渠道后重启」会被 config 里的旧渠道复活。
+	if !seeded {
 		for i := range cfg.Channels {
 			ch := cfg.Channels[i]
 			if ch.Weight <= 0 {
@@ -113,38 +117,25 @@ func New(cfg *config.Config, log *slog.Logger) (*Store, error) {
 		if err := s.save(); err != nil {
 			return nil, err
 		}
-	} else {
-		// 配置文件中新增的渠道补充进来（已存在的保持运行期修改结果）
-		for i := range cfg.Channels {
-			ch := cfg.Channels[i]
-			if _, ok := s.channels[ch.ID]; ok {
-				continue
-			}
-			if ch.Weight <= 0 {
-				ch.Weight = 1
-			}
-			if ch.CreatedAt.IsZero() {
-				ch.CreatedAt = time.Now()
-			}
-			s.channels[ch.ID] = &ch
-			s.order = append(s.order, ch.ID)
-		}
 	}
 	return s, nil
 }
 
-func (s *Store) load() error {
+// load 从数据文件恢复渠道与路由。返回 loaded 表示「数据文件存在且解析成功」：
+// 只有 loaded=false（文件不存在或损坏）才需要用配置文件播种，避免
+// 「管理界面删光/删除渠道后，重启又被 config.yaml 复活」。
+func (s *Store) load() (bool, error) {
 	data, err := os.ReadFile(s.dataFile)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("读取 %s 失败: %w", s.dataFile, err)
+		return false, fmt.Errorf("读取 %s 失败: %w", s.dataFile, err)
 	}
 	var p persisted
 	if err := json.Unmarshal(data, &p); err != nil {
 		s.log.Warn("数据文件解析失败，忽略", "file", s.dataFile, "err", err)
-		return nil
+		return false, nil
 	}
 	for i := range p.Channels {
 		ch := p.Channels[i]
@@ -155,7 +146,7 @@ func (s *Store) load() error {
 		s.order = append(s.order, ch.ID)
 	}
 	s.routes = p.Routes
-	return nil
+	return true, nil
 }
 
 // save 把渠道与路由原子落盘。
@@ -836,6 +827,9 @@ func (s *Store) CloseLogs() {
 // Logs 读取最近 n 条访问日志.
 func (s *Store) Logs(n int) []model.LogEntry { return s.logs.List(n) }
 
+// LogsCount 当前内存中保留的日志条数（O(1)，不拷贝缓冲）。
+func (s *Store) LogsCount() int { return s.logs.Count() }
+
 // ForEachLog 在日志缓冲内遍历（最新在前），不产生切片分配。
 // 用于筛选项汇总这类只需汇总值的场景，避免整份拷贝。
 func (s *Store) ForEachLog(fn func(model.LogEntry)) { s.logs.ForEach(fn) }
@@ -882,6 +876,12 @@ func (s *Store) QueryLogs(q model.LogQuery) model.LogPage {
 	}
 }
 
+// ExportLogs 返回全部匹配的日志（最新在前），不套用分页的 page_size 上限。
+// CSV/JSON 导出需要完整数据，若走 QueryLogs 会被 500 条分页上限截断成第一页。
+func (s *Store) ExportLogs(q model.LogQuery) []model.LogEntry {
+	return s.logs.Filter(func(e model.LogEntry) bool { return Match(e, q) })
+}
+
 // RequestLogs 返回同一 request_id 的全部日志，按发生顺序（最早 -> 最新）。
 func (s *Store) RequestLogs(requestID string) []model.LogEntry {
 	// 用 Find 而不是 Snapshot + 遍历：详情页只关心这一两条记录，
@@ -911,3 +911,26 @@ func (s *Store) Config() *config.Config { return s.cfg }
 
 // Uptime 运行时长。
 func (s *Store) Uptime() time.Duration { return time.Since(s.started) }
+
+// UptimeString 运行时长的人类可读格式（如「2 天 3 小时 5 分」）。
+func (s *Store) UptimeString() string { return FormatUptime(s.Uptime()) }
+
+// FormatUptime 把时长格式化为紧凑可读的中文描述：
+// 不足 1 分显示秒、不足 1 小时显示「X 分 Y 秒」、不足 1 天显示「X 小时 Y 分」、否则「X 天 X 小时」。
+// 相比 time.Duration.String()（如 1h2m3.456789s），去掉无意义的亚秒精度并补上天数。
+func FormatUptime(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	secs := int64(d / time.Second)
+	switch {
+	case secs < 60:
+		return fmt.Sprintf("%d 秒", secs)
+	case secs < 3600:
+		return fmt.Sprintf("%d 分 %d 秒", secs/60, secs%60)
+	case secs < 86400:
+		return fmt.Sprintf("%d 小时 %d 分", secs/3600, (secs%3600)/60)
+	default:
+		return fmt.Sprintf("%d 天 %d 小时", secs/86400, (secs%86400)/3600)
+	}
+}

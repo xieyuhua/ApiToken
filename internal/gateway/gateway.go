@@ -72,7 +72,7 @@ func (s *Server) Handler() http.Handler {
 
 	// 健康检查
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, map[string]any{"status": "ok", "version": model.Version, "uptime": s.store.Uptime().String()})
+		writeJSON(w, map[string]any{"status": "ok", "version": model.Version, "uptime": s.store.UptimeString()})
 	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
 		enabled := 0

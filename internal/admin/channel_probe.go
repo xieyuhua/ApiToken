@@ -36,7 +36,10 @@ func (h *Handler) probeDraft(w http.ResponseWriter, r *http.Request) {
 		Model  string `json:"model"`
 		Prompt string `json:"prompt"`
 	}
-	_ = decodeJSON(r, &body)
+	if err := decodeJSON(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+		return
+	}
 	res := proxy.Probe(r.Context(), h.cfg, h.client, ch, body.Model, body.Prompt)
 	writeJSON(w, http.StatusOK, res)
 }

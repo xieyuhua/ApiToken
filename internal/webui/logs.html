@@ -380,10 +380,11 @@
         function copyReqId() { copyId(lastRequestId); }
 
         function exportCsv() {
-            window.open('/admin/logs/export?format=csv&' + query({ page: '1', page_size: '500' }), '_blank');
+            // 导出走全量（后端不受分页 page_size 上限约束），query() 仅附带筛选条件
+            window.open('/admin/logs/export?format=csv&' + query(), '_blank');
         }
         function exportJson() {
-            window.open('/admin/logs/export?format=json&' + query({ page: '1', page_size: '500' }), '_blank');
+            window.open('/admin/logs/export?format=json&' + query(), '_blank');
         }
         async function clearLogs() {
             if (!confirm('确认清空全部调用日志？')) return;

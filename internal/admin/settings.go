@@ -101,7 +101,7 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 		"settings": masked,
 		"meta": SettingsMeta{
 			ConfigFile: h.cfg.Path(), DataFile: h.cfg.DataFile(), StatsFile: h.store.StatsFile(), Addr: h.cfg.Server.Addr,
-			Version: model.Version, Uptime: h.store.Uptime().String(),
+			Version: model.Version, Uptime: h.store.UptimeString(),
 			RestartNeeded: []string{"监听地址 addr", "数据目录 data_dir", "单次请求体积上限 max_body_mb", "上游连接池参数", "访问日志落盘开关 file_enabled"},
 			HotFields:     []string{"网关密钥 / 管理令牌", "来源 IP 解析", "路由策略与重试", "渠道失败冷却", "日志设置", "请求超时", "出网代理"},
 		},

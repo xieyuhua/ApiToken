@@ -31,7 +31,6 @@ func New(st *store.Store, cfg *config.Config, log *slog.Logger) *Handler {
 // Register 注册路由。
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/api-info", h.apiInfo)
-	mux.HandleFunc("GET /admin/config", h.getConfig)
 	mux.HandleFunc("GET /admin/settings", h.getSettings)
 	mux.HandleFunc("POST /admin/settings", h.updateSettings)
 
@@ -76,24 +75,13 @@ func (h *Handler) apiInfo(w http.ResponseWriter, _ *http.Request) {
 		"routing":     h.cfg.Routing,
 		"auth":        map[string]any{"client_keys_required": len(rt.ClientKeys) > 0, "admin_token_required": rt.AdminToken != ""},
 		"data_file":   h.cfg.DataFile(),
-		"uptime":      h.store.Uptime().String(),
+		"uptime":      h.store.UptimeString(),
 		"client_keys": maskedKeys(rt.ClientKeys),
 		"defaults": map[string]any{
 			"chat_path":   proxy.DefaultChatPath,
 			"auth_style":  "bearer",
 			"auth_header": "Authorization",
 		},
-	})
-}
-
-func (h *Handler) getConfig(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"config_file": h.cfg.Path(),
-		"server":      h.cfg.Server,
-		"security":    map[string]any{"client_keys": maskedKeys(h.cfg.Security.ClientKeys), "admin_token": model.MaskSecret(h.cfg.Security.AdminToken)},
-		"routing":     h.cfg.Routing,
-		"logging":     h.cfg.Logging,
-		"upstream":    h.cfg.Upstream,
 	})
 }
 
@@ -280,7 +268,10 @@ func (h *Handler) toggleChannel(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Enabled *bool `json:"enabled"`
 	}
-	_ = decodeJSON(r, &body)
+	if err := decodeJSON(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+		return
+	}
 	id := r.PathValue("id")
 	current, ok := h.store.GetChannel(id)
 	if !ok {
@@ -310,7 +301,10 @@ func (h *Handler) testChannel(w http.ResponseWriter, r *http.Request) {
 		Model  string `json:"model"`
 		Prompt string `json:"prompt"`
 	}
-	_ = decodeJSON(r, &body)
+	if err := decodeJSON(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+		return
+	}
 	res := proxy.Probe(r.Context(), h.cfg, h.client, ch, body.Model, body.Prompt)
 	h.store.SetHealth(id, healthInfoFromProbe(res))
 	writeJSON(w, http.StatusOK, res)
@@ -320,7 +314,10 @@ func (h *Handler) fetchModels(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Apply bool `json:"apply"`
 	}
-	_ = decodeJSON(r, &body)
+	if err := decodeJSON(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+		return
+	}
 	// GET 时 apply 走 query（?apply=1）
 	if r.Method == http.MethodGet && !body.Apply {
 		body.Apply = r.URL.Query().Get("apply") == "1" || strings.EqualFold(r.URL.Query().Get("apply"), "true")

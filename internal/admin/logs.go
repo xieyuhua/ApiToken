@@ -98,26 +98,26 @@ func (h *Handler) logFacets(w http.ResponseWriter, _ *http.Request) {
 // exportLogs GET /admin/logs/export —— 导出 CSV / JSON。
 func (h *Handler) exportLogs(w http.ResponseWriter, r *http.Request) {
 	q := logQuery(r)
-	page := h.store.QueryLogs(q)
+	// 导出走 ExportLogs 取全部匹配项，避免被 QueryLogs 的 500 条分页上限截断。
+	items := h.store.ExportLogs(q)
 	format := r.URL.Query().Get("format")
 	stamp := time.Now().Format("20060102-150405")
 
 	if format == "json" {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="apitoken-logs-%s.json"`, stamp))
-		writeJSON(w, http.StatusOK, page.Items)
+		writeJSON(w, http.StatusOK, items)
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="apitoken-logs-%s.csv"`, stamp))
 	cw := csv.NewWriter(w)
-	defer cw.Flush()
 	_ = cw.Write([]string{
 		"time", "request_id", "client_ip", "user_agent", "model", "upstream_model", "channel",
 		"stream", "status", "latency_ms", "attempts", "prompt_tokens", "completion_tokens", "error", "endpoint",
 	})
-	for _, e := range page.Items {
+	for _, e := range items {
 		_ = cw.Write([]string{
 			e.Time.Format("2006-01-02 15:04:05.000"), e.RequestID, e.ClientIP, e.UserAgent, e.Model, e.UpstreamModel,
 			e.ChannelID, strconv.FormatBool(e.Stream), strconv.Itoa(e.Status),
@@ -125,6 +125,10 @@ func (h *Handler) exportLogs(w http.ResponseWriter, r *http.Request) {
 			strconv.FormatInt(e.PromptTokens, 10), strconv.FormatInt(e.CompletionTokens, 10),
 			oneLine(e.Error), e.Endpoint,
 		})
+	}
+	cw.Flush()
+	if err := cw.Error(); err != nil {
+		h.log.Warn("导出 CSV 失败", "err", err)
 	}
 }
 

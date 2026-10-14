@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -507,12 +508,16 @@ func hasNonTextPart(parts []any) bool {
 	return false
 }
 
+// msgIDFallbackSeq 随机源异常时的进程内自增序号，避免同纳秒时间戳撞 ID。
+var msgIDFallbackSeq atomic.Uint64
+
 // NewMessageID 生成 Anthropic 风格的 msg_ ID。
 func NewMessageID() string {
 	b := make([]byte, 12)
 	if _, err := rand.Read(b); err != nil {
-		// 随机源异常时退化为时间派生 ID（ID 只用于日志关联，无需密码学强度）
-		return "msg_" + hex.EncodeToString([]byte(strconv.FormatInt(time.Now().UnixNano(), 16)))
+		// 随机源异常时退化为「时间戳 + 自增序号」（ID 只用于日志关联，无需密码学强度）
+		return "msg_" + strconv.FormatUint(uint64(time.Now().UnixNano()), 16) +
+			"-" + strconv.FormatUint(msgIDFallbackSeq.Add(1), 10)
 	}
 	return "msg_" + hex.EncodeToString(b)
 }

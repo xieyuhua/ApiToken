@@ -207,7 +207,7 @@ function renderCards(s) {
     ['平均延迟', fmtLatency(s.avg_latency_ms), '网关端到端'],
     ['启用渠道', s.enabled_channels + ' / ' + s.channel_count, '含多平台账号'],
     ['可路由模型', Object.keys(s.models || {}).length, '见 /v1/models'],
-    ['运行时长', Math.floor(s.uptime_seconds / 60) + ' 分', fmtTimeShort(s.started_at) + ' 启动']
+    ['运行时长', fmtUptime(s.uptime_seconds), fmtTimeShort(s.started_at) + ' 启动']
   ].map(([l, v, sub]) => `<div class="card"><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${sub}</div></div>`).join('');
 }
 
