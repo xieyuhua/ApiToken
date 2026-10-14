@@ -2,13 +2,14 @@ package proxy
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/demo1/apitoken/internal/model"
-	"github.com/demo1/apitoken/internal/proxy/translate"
+	"github.com/xieyuhua/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/proxy/translate"
 )
 
 // Messages POST /v1/messages —— Anthropic Messages 协议入口。
@@ -31,9 +32,16 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	raw, err := io.ReadAll(io.LimitReader(r.Body, h.currentMaxBody()))
+	maxBody := h.currentMaxBody()
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
 	if err != nil {
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "读取请求体失败: "+err.Error())
+		return
+	}
+	// 读满上限仍可能有剩余：明确按 413 拒绝，而不是静默截断后报「非法 JSON」
+	if int64(len(raw)) > maxBody {
+		writeAnthropicError(w, http.StatusRequestEntityTooLarge, "request_too_large",
+			fmt.Sprintf("请求体超过 %dMB 上限", maxBody>>20))
 		return
 	}
 

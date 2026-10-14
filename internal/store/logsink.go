@@ -13,8 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/demo1/apitoken/internal/config"
-	"github.com/demo1/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/config"
+	"github.com/xieyuhua/apitoken/internal/model"
 )
 
 // 日志管道参数。

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/demo1/apitoken/internal/config"
+	"github.com/xieyuhua/apitoken/internal/config"
 )
 
 // relayResult 单次上游调用的结果（用于日志记录）。

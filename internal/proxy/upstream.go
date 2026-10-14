@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -16,8 +17,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/demo1/apitoken/internal/config"
-	"github.com/demo1/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/config"
+	"github.com/xieyuhua/apitoken/internal/model"
 )
 
 // Client 上游 HTTP 客户端。
@@ -146,11 +147,10 @@ func streamOptionsRejected(body []byte) bool {
 // retryable 判断错误是否值得切换渠道重试。
 func (e *upstreamError) retryable(retryStatus []int) bool {
 	if e.Transport != nil {
-		// 上下文取消（客户端断开）不重试
-		if e.Transport == context.Canceled || e.Transport == context.DeadlineExceeded {
-			return false
-		}
-		if strings.Contains(e.Transport.Error(), "context canceled") {
+		// 上下文取消（客户端断开）或超时（上游响应慢）不重试。
+		// 用 errors.Is 而非 == 比较：http.Client 返回的 error 通常被 url.Error 包装，
+		// == 在包装后无法命中，导致超时/取消在两种包装形式下判定不一致。
+		if errors.Is(e.Transport, context.Canceled) || errors.Is(e.Transport, context.DeadlineExceeded) {
 			return false
 		}
 		return true

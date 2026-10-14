@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/demo1/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/model"
 )
 
 // TestDiagnostics 验证网关自检：概览 + 完整体检（配置、渠道、网络）。

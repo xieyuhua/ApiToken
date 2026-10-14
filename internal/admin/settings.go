@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/demo1/apitoken/internal/config"
-	"github.com/demo1/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/config"
+	"github.com/xieyuhua/apitoken/internal/model"
 )
 
 // SettingsView 设置页可读写的配置（仅限可热更新项）。

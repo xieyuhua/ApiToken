@@ -9,10 +9,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/demo1/apitoken/internal/config"
-	"github.com/demo1/apitoken/internal/model"
-	"github.com/demo1/apitoken/internal/proxy"
-	"github.com/demo1/apitoken/internal/store"
+	"github.com/xieyuhua/apitoken/internal/config"
+	"github.com/xieyuhua/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/proxy"
+	"github.com/xieyuhua/apitoken/internal/store"
 )
 
 // Handler 管理接口处理器。

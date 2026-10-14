@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/demo1/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/model"
 )
 
 // TestChatPageAndChannelHeaders 校验聊天页面可访问，且响应带命中的渠道头（前端据此展示路由结果）。

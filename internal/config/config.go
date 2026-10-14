@@ -12,7 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/demo1/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/model"
 )
 
 // Duration 支持 YAML 中 "300s" / "2m" 写法。

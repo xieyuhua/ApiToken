@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/demo1/apitoken/internal/config"
-	"github.com/demo1/apitoken/internal/gateway"
-	"github.com/demo1/apitoken/internal/model"
-	"github.com/demo1/apitoken/internal/store"
+	"github.com/xieyuhua/apitoken/internal/config"
+	"github.com/xieyuhua/apitoken/internal/gateway"
+	"github.com/xieyuhua/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/store"
 )
 
 // TestLogQueryFilterPagingAndExport 覆盖分页、筛选、聚合、详情、导出与清空。

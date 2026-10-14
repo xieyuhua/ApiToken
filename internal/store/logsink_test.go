@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/demo1/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/model"
 )
 
 // newTestSink 创建一个落盘到临时目录的管道。

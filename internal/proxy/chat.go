@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/demo1/apitoken/internal/config"
-	"github.com/demo1/apitoken/internal/model"
-	"github.com/demo1/apitoken/internal/store"
+	"github.com/xieyuhua/apitoken/internal/config"
+	"github.com/xieyuhua/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/store"
 )
 
 // Handler OpenAI 兼容代理。
@@ -78,9 +78,16 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	raw, err := io.ReadAll(io.LimitReader(r.Body, h.currentMaxBody()))
+	maxBody := h.currentMaxBody()
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
 	if err != nil {
 		WriteError(w, http.StatusBadRequest, "read_body_failed", "读取请求体失败: "+err.Error(), "")
+		return
+	}
+	// 读满上限仍可能有剩余：明确按 413 拒绝，而不是静默截断后报「不是合法 JSON」
+	if int64(len(raw)) > maxBody {
+		WriteError(w, http.StatusRequestEntityTooLarge, "request_too_large",
+			fmt.Sprintf("请求体超过 %dMB 上限", maxBody>>20), "")
 		return
 	}
 	var payload map[string]any

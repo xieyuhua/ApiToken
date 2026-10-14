@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/demo1/apitoken/internal/config"
-	"github.com/demo1/apitoken/internal/gateway"
-	"github.com/demo1/apitoken/internal/store"
+	"github.com/xieyuhua/apitoken/internal/config"
+	"github.com/xieyuhua/apitoken/internal/gateway"
+	"github.com/xieyuhua/apitoken/internal/store"
 )
 
 // newSettingsGateway 构造一个带真实配置文件的网关，用于验证设置保存与热更新。

@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/demo1/apitoken/internal/config"
-	"github.com/demo1/apitoken/internal/gateway"
-	"github.com/demo1/apitoken/internal/model"
-	"github.com/demo1/apitoken/internal/store"
+	"github.com/xieyuhua/apitoken/internal/config"
+	"github.com/xieyuhua/apitoken/internal/gateway"
+	"github.com/xieyuhua/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/store"
 )
 
 func testLogger() *slog.Logger {

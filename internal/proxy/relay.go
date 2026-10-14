@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/demo1/apitoken/internal/model"
-	"github.com/demo1/apitoken/internal/proxy/translate"
+	"github.com/xieyuhua/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/proxy/translate"
 )
 
 // responder 决定如何把上游的 OpenAI 兼容响应写回客户端。

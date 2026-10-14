@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/demo1/apitoken/internal/config"
-	"github.com/demo1/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/config"
+	"github.com/xieyuhua/apitoken/internal/model"
 )
 
 func entry(i int) model.LogEntry {

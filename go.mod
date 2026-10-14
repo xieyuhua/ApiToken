@@ -1,4 +1,4 @@
-module github.com/demo1/apitoken
+module github.com/xieyuhua/apitoken
 
 go 1.24
 

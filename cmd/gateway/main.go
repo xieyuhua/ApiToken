@@ -7,15 +7,16 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/demo1/apitoken/internal/config"
-	"github.com/demo1/apitoken/internal/gateway"
-	"github.com/demo1/apitoken/internal/store"
+	"github.com/xieyuhua/apitoken/internal/config"
+	"github.com/xieyuhua/apitoken/internal/gateway"
+	"github.com/xieyuhua/apitoken/internal/store"
 )
 
 func main() {
@@ -59,11 +60,12 @@ func main() {
 	}
 
 	go func() {
+		display := displayAddr(cfg.Server.Addr)
 		logger.Info("apitoken 网关已启动",
 			"version", gateway.Version,
-			"addr", "http://127.0.0.1"+cfg.Server.Addr,
-			"ui", "http://127.0.0.1"+cfg.Server.Addr+"/",
-			"api", "http://127.0.0.1"+cfg.Server.Addr+"/v1",
+			"addr", "http://"+display,
+			"ui", "http://"+display+"/",
+			"api", "http://"+display+"/v1",
 			"channels", len(st.ListChannels()),
 			"config", cfg.Path(),
 			"data", cfg.DataFile(),
@@ -105,4 +107,17 @@ func newLogger(level string) *slog.Logger {
 	l := slog.New(h)
 	slog.SetDefault(l)
 	return l
+}
+
+// displayAddr 把监听地址规范为日志里可直接访问的展示地址：
+// ":8080" 与 "0.0.0.0:8080" 统一显示为 127.0.0.1:8080，具体 IP 原样展示。
+func displayAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr // 非 host:port 形式，原样返回
+	}
+	if host == "" || host == "0.0.0.0" {
+		return net.JoinHostPort("127.0.0.1", port)
+	}
+	return addr
 }

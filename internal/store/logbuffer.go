@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/demo1/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/model"
 )
 
 // LogBuffer 定长访问日志环形缓冲。

@@ -13,12 +13,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/demo1/apitoken/internal/admin"
-	"github.com/demo1/apitoken/internal/config"
-	"github.com/demo1/apitoken/internal/model"
-	"github.com/demo1/apitoken/internal/proxy"
-	"github.com/demo1/apitoken/internal/store"
-	"github.com/demo1/apitoken/internal/webui"
+	"github.com/xieyuhua/apitoken/internal/admin"
+	"github.com/xieyuhua/apitoken/internal/config"
+	"github.com/xieyuhua/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/proxy"
+	"github.com/xieyuhua/apitoken/internal/store"
+	"github.com/xieyuhua/apitoken/internal/webui"
 )
 
 // Server 网关 HTTP 服务。

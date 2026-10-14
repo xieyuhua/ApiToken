@@ -2,12 +2,13 @@ package gateway_test
 
 import (
 	"encoding/json"
-	"github.com/demo1/apitoken/internal/model"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/xieyuhua/apitoken/internal/model"
 )
 
 // TestThemeAndSecretReveal 验证主题设置与密钥明文查看。

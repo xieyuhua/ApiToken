@@ -3,8 +3,8 @@ package admin
 import (
 	"strings"
 
-	"github.com/demo1/apitoken/internal/model"
-	"github.com/demo1/apitoken/internal/proxy"
+	"github.com/xieyuhua/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/proxy"
 )
 
 // applyChannelDefaults 归一化渠道配置：不填的字段一律走默认值。

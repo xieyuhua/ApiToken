@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/demo1/apitoken/internal/model"
-	"github.com/demo1/apitoken/internal/proxy"
-	"github.com/demo1/apitoken/internal/store"
+	"github.com/xieyuhua/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/proxy"
+	"github.com/xieyuhua/apitoken/internal/store"
 )
 
 // healthInfoFromProbe 把连通性探测结果转成渠道健康状态（连通性测试与渠道体检共用）。

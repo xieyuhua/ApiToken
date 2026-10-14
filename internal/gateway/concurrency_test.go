@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/demo1/apitoken/internal/config"
-	"github.com/demo1/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/config"
+	"github.com/xieyuhua/apitoken/internal/model"
 )
 
 // 本文件覆盖并发场景：锁的粒度、死锁与计数自洽。

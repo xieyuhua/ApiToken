@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/demo1/apitoken/internal/model"
-	"github.com/demo1/apitoken/internal/store"
+	"github.com/xieyuhua/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/store"
 )
 
 // logQuery 从请求参数解析日志查询条件。

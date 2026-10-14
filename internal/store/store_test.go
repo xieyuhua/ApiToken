@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/demo1/apitoken/internal/config"
-	"github.com/demo1/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/config"
+	"github.com/xieyuhua/apitoken/internal/model"
 )
 
 // newCoolStore 构造一个带 n 个同模型渠道的 Store，用于冷却逻辑测试。

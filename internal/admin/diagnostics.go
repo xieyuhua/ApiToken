@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/demo1/apitoken/internal/model"
-	"github.com/demo1/apitoken/internal/proxy"
+	"github.com/xieyuhua/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/proxy"
 )
 
 // 诊断结论等级。

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/demo1/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/model"
 )
 
 // TestChannelDraftProbe 验证「添加渠道」弹窗中未保存的草稿也能测试连通性与拉取模型。
