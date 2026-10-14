@@ -206,6 +206,135 @@ function renderColumns(elId, items, opts = {}) {
   }).join('');
 }
 
+/* ===== 折线图（Canvas 绘制：文字固定像素不变形、随主题变色、窗口缩放自适应） ===== */
+const _lineCharts = {};
+
+// 首页聚合分析折线图：语义与 renderColumns 完全一致，仅把「柱」换成「折线 + 面积」
+function renderLine(elId, items, opts = {}) {
+  const el = $(elId);
+  if (!el) return;
+  if (!items || !items.length) { el.innerHTML = '<div class="muted">暂无数据</div>'; delete _lineCharts[elId]; return; }
+  _lineCharts[elId] = { items, opts };
+  drawLineChart(el, items, opts);
+}
+
+function drawLineChart(el, items, opts) {
+  const val = i => opts.showTokens ? ((i.prompt_tokens || 0) + (i.completion_tokens || 0)) : (i.count || 0);
+  const list = items.slice().sort((a, b) => val(b) - val(a)).slice(0, opts.top || 12);
+  const max = Math.max(...list.map(val), 1);
+  const n = list.length;
+
+  let cv = el.querySelector('canvas');
+  if (!cv) { cv = document.createElement('canvas'); el.innerHTML = ''; el.appendChild(cv); }
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(el.clientWidth, 240);
+  const h = 220;
+  cv.width = Math.round(w * dpr);
+  cv.height = Math.round(h * dpr);
+  cv.style.width = w + 'px';
+  cv.style.height = h + 'px';
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const cs = getComputedStyle(document.documentElement);
+  const primary = cs.getPropertyValue('--primary').trim();
+  const muted = cs.getPropertyValue('--muted').trim();
+  const err = cs.getPropertyValue('--err').trim();
+  const panel = cs.getPropertyValue('--panel').trim();
+  const border = cs.getPropertyValue('--border').trim();
+
+  const padL = 46, padR = 20, padT = 24, padB = 30;
+  const iw = w - padL - padR, ih = h - padT - padB;
+  const pts = list.map((i, idx) => {
+    const x = n > 1 ? padL + idx * iw / (n - 1) : padL + iw / 2;
+    const y = padT + ih - (val(i) / max) * ih;
+    return { x, y, i };
+  });
+  const font = '11px -apple-system, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif';
+
+  // 水平网格线 + Y 轴刻度（0 / ½max / max）
+  ctx.font = '10px -apple-system, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  [0, 0.5, 1].forEach(frac => {
+    const y = padT + ih - frac * ih;
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(w - padR, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = muted;
+    ctx.fillText(fmt(Math.round(max * frac)), padL - 8, y);
+  });
+
+  // 面积渐变填充（主色 → 透明）
+  const grad = ctx.createLinearGradient(0, padT, 0, padT + ih);
+  grad.addColorStop(0, hexToRgba(primary, 0.20));
+  grad.addColorStop(1, hexToRgba(primary, 0));
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, padT + ih);
+  pts.forEach(p => ctx.lineTo(p.x, p.y));
+  ctx.lineTo(pts[pts.length - 1].x, padT + ih);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // 折线
+  ctx.beginPath();
+  pts.forEach((p, k) => k ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+  ctx.strokeStyle = primary;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.stroke();
+
+  const label = i => opts.showTokens ? fmt((i.prompt_tokens || 0) + (i.completion_tokens || 0))
+    : opts.showLatency ? fmtLatency(i.avg_latency_ms) : fmt(i.count || 0);
+
+  ctx.font = font;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  pts.forEach(p => {
+    const bad = !opts.showTokens && (p.i.failed || 0) > 0;
+    // 数据点
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = bad ? err : panel;
+    ctx.strokeStyle = bad ? err : primary;
+    ctx.lineWidth = 2;
+    ctx.fill();
+    ctx.stroke();
+    // 数值（点上方）
+    ctx.fillStyle = muted;
+    ctx.fillText(label(p.i), p.x, p.y - 9);
+    // 名称（底部）
+    ctx.fillStyle = muted;
+    ctx.fillText(String(p.i.name || '').slice(0, 10), p.x, h - 8);
+  });
+}
+
+// hex(#rrggbb) → rgba(r,g,b,a)，用于把主题色转成半透明面积填充
+function hexToRgba(hex, a) {
+  const m = /^#?([0-9a-f]{6})$/i.exec((hex || '').trim());
+  if (!m) return 'rgba(47,129,247,' + a + ')';
+  const n = parseInt(m[1], 16);
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+
+// 窗口缩放时按新宽度重绘所有折线图（测试沙箱可能没有 addEventListener，加保护）
+if (window.addEventListener) {
+  window.addEventListener('resize', () => {
+    Object.keys(_lineCharts).forEach(id => {
+      const el = $(id);
+      if (el && _lineCharts[id]) drawLineChart(el, _lineCharts[id].items, _lineCharts[id].opts);
+    });
+  });
+}
+
 // 跟随系统时，系统主题变化实时生效
 if (window.matchMedia) {
   const mq = window.matchMedia('(prefers-color-scheme: light)');
