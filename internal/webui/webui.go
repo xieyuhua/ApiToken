@@ -8,11 +8,17 @@ import (
 	"strings"
 )
 
-//go:embed index.html logs.html diagnostics.html chat.html settings.html static
+//go:embed index.html channels.html routes.html logs.html diagnostics.html chat.html settings.html static
 var assets embed.FS
 
 // Handler 返回管理控制台首页。
 func Handler() http.HandlerFunc { return serve("index.html") }
+
+// ChannelsHandler 返回渠道管理页面。
+func ChannelsHandler() http.HandlerFunc { return serve("channels.html") }
+
+// RoutesHandler 返回路由管理页面。
+func RoutesHandler() http.HandlerFunc { return serve("routes.html") }
 
 // LogsHandler 返回调用日志页面。
 func LogsHandler() http.HandlerFunc { return serve("logs.html") }

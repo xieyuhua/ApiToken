@@ -47,7 +47,9 @@ go build -o apitoken ./cmd/gateway
 
 | 地址 | 说明 |
 | --- | --- |
-| http://127.0.0.1:8080/ | Web 控制台：渠道、路由、用量看板（填入管理令牌 `adm-0001`）；渠道列表可按名称/ID/模型名筛选、模型多时默认折叠 |
+| http://127.0.0.1:8080/ | Web 控制台：用量看板 + 聚合分析（填入管理令牌 `adm-0001`） |
+| http://127.0.0.1:8080/channels | 渠道：渠道 CRUD（按名称/ID/模型名筛选、模型多时折叠、测试连通、拉取上游模型） |
+| http://127.0.0.1:8080/routes | 路由：模型 → 渠道顺序、模型映射（故障转移） |
 | http://127.0.0.1:8080/logs | 调用日志：筛选、分页、故障转移链路、导出 |
 | http://127.0.0.1:8080/chat | 对话：像第三方客户端一样与网关对话，验证是否可用（模型下拉支持关键词搜索） |
 | http://127.0.0.1:8080/diagnostics | 测试：网关自检、渠道体检、出网诊断 |
@@ -512,7 +514,9 @@ internal/proxy/        # 转发核心（鉴权后共用）：渠道故障转移�
 internal/admin/        # 管理 REST API（handler / settings / logs / diagnostics）
 internal/gateway/      # 路由组装与中间件（鉴权/CORS/恢复/请求 ID）+ 端到端测试
 internal/webui/        # 内嵌管理页面
-  ├─ index.html        #   控制台（渠道/路由/看板）+ 其内联脚本
+  ├─ index.html        #   控制台（用量看板 + 聚合分析）
+  ├─ channels.html     #   渠道管理页
+  ├─ routes.html       #   路由管理页
   ├─ logs.html         #   调用日志页
   ├─ chat.html         #   对话测试页
   ├─ diagnostics.html  #   自检/体检页

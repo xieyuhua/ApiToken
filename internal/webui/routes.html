@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>路由 · apitoken</title>
+<link rel="stylesheet" href="/static/style.css" />
+<script>(function(){try{var t=localStorage.getItem('apitoken_theme')||'auto';if(t==='auto'){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';}document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+</head>
+<body>
+<header>
+  <h1>⚡ apitoken</h1>
+  <nav>
+    <a href="/">控制台</a>
+    <a href="/channels">渠道</a>
+    <a href="/routes" class="active">路由</a>
+    <a href="/logs">调用日志</a>
+    <a href="/diagnostics">测试</a>
+    <a href="/chat">对话</a>
+    <a href="/settings">设置</a>
+  </nav>
+  <span class="tag" id="ver">-</span>
+  <span class="sp"></span>
+  <input id="token" placeholder="管理令牌 adm-xxx" style="width:190px" />
+  <button class="ghost" onclick="saveToken()">保存</button>
+  <button class="ghost" onclick="refresh()">刷新</button>
+</header>
+
+<main>
+  <section>
+    <h2>路由（模型 → 渠道顺序）<span class="sp"></span>
+      <button class="ghost" onclick="openRouteDlg()">+ 添加路由</button>
+    </h2>
+    <div class="pad">
+      <table>
+        <thead><tr><th>对外模型名</th><th>渠道顺序</th><th>模型映射</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody id="rtBody"></tbody>
+      </table>
+      <p class="hint">未显式配置的模型会按渠道 models 字段自动路由；同一模型可绑定多个渠道实现故障转移。</p>
+    </div>
+  </section>
+</main>
+
+<dialog id="rtDlg">
+  <div class="dlg-head" id="rtDlgHead">添加路由</div>
+  <div class="dlg-body">
+    <div class="grid">
+      <div>
+        <label>对外模型名（客户端要用的名字）</label>
+        <div class="combo">
+          <input id="r_model" class="mono" placeholder="可直接输入自定义名字，或点开搜索已有模型" />
+        </div>
+        <p class="hint" id="r_modelHint">可自由输入：列表里没有的名字直接敲进去即可（回车确认），输入内容会同时匹配模型名与渠道名。</p>
+      </div>
+      <div><label>状态</label><select id="r_enabled"><option value="true">启用</option><option value="false">停用</option></select></div>
+    </div>
+
+    <label style="margin-top:14px">渠道顺序（自上而下按顺序尝试故障转移）</label>
+    <div id="r_channelList"></div>
+    <div class="row" style="margin-top:8px">
+      <div class="combo" style="flex:1">
+        <input id="r_channelPick" class="mono" placeholder="— 选择要添加的渠道（可搜索）—" />
+      </div>
+      <button class="ghost mini" onclick="addRouteChannel()">添加</button>
+    </div>
+
+    <label style="margin-top:16px">模型映射（可选：各渠道上的真实模型名不同时使用）</label>
+    <p class="hint">一个渠道在本条路由里对应一个上游模型。若想让<strong>同一个渠道</strong>对外提供多个模型（例如 gpt-4o 用 A、claude-3 用 B），
+      为每个对外模型名各建一条路由即可 —— 在下方路由列表点「复制」可快速基于现有路由新建。</p>
+    <div id="r_mapList"></div>
+    <div class="row" style="margin-top:8px">
+      <div class="combo" style="flex:1">
+        <input id="r_mapChannel" class="mono" placeholder="① 先选择渠道（可搜索）" />
+      </div>
+      <span class="muted">→</span>
+      <div class="combo" style="flex:1">
+        <input id="r_mapPickModel" class="mono" placeholder="② 再选择模型（可搜索）" />
+      </div>
+      <button class="ghost mini" onclick="addRouteMap()">加入路由</button>
+    </div>
+    <p class="hint" id="r_mapHint">先选渠道，右侧会自动列出该渠道可用的模型名；不需要映射就选「（跟随对外模型名）」。</p>
+    <p class="hint">不配置映射时，客户端的模型名会原样发给上游。显式路由优先于渠道 models 的自动匹配。</p>
+  </div>
+  <div class="dlg-foot">
+    <button class="ghost" onclick="document.getElementById('rtDlg').close()">取消</button>
+    <button onclick="saveRoute()">保存</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/app.js"></script>
+<script src="/static/combo.js"></script>
+<script>
+let routeEditingModel = '';   // 非空 = 正在更新这条路由（用于标题提示与改名确认）
+let routeChannels = [];
+let routeMaps = [];
+let mapPickChannel = '';      // 映射区当前选中的渠道
+
+async function refresh() {
+  try {
+    const [info, channels, routes] = await Promise.all([
+      api('/admin/api-info'), api('/admin/channels'), api('/admin/routes')
+    ]);
+    $('ver').textContent = 'v' + info.version + ' · 运行 ' + info.uptime + ' · 策略 ' + (info.routing?.strategy || '-');
+    window.__channels = channels;
+    window.__routes = routes;
+    renderRoutes(routes);
+  } catch (e) { toast(e.message, true); }
+}
+
+function renderRoutes(list) {
+  $('rtBody').innerHTML = list.map(r => `<tr>
+      <td class="mono"><b>${esc(r.model)}</b></td>
+      <td class="mono">${(r.channels || []).map(esc).join(' → ')}</td>
+      <td class="mono muted">${esc(JSON.stringify(r.model_map || {}))}</td>
+      <td><span class="pill ${r.enabled === false ? 'off' : 'on'}">${r.enabled === false ? '停用' : '启用'}</span></td>
+      <td class="nowrap">
+        <button class="mini ghost" onclick="openRouteDlg('${encodeURIComponent(r.model)}')">编辑</button>
+        <button class="mini ghost" title="以此路由为模板新建，可为同一渠道选另一个上游模型" onclick="copyRoute('${encodeURIComponent(r.model)}')">复制</button>
+        <button class="mini danger" onclick="delRoute('${encodeURIComponent(r.model)}')">删除</button>
+      </td>
+    </tr>`).join('') || `<tr><td colspan="5" class="empty">暂无显式路由（使用渠道 models 自动路由）</td></tr>`;
+}
+
+/** 汇总网关已知模型名：各渠道 models + 已有路由的对外名 + 调用日志里出现过的 */
+function knownModelNames() {
+  const set = new Set();
+  (window.__knownModels || []).forEach(m => m && set.add(m));
+  (window.__channels || []).forEach(c => (c.models || []).forEach(m => m && m !== '*' && set.add(m)));
+  (window.__routes || []).forEach(r => r.model && set.add(r.model));
+  return Array.from(set).sort();
+}
+
+/** 拉取调用日志里出现过的模型名，补充候选池（失败可忽略） */
+async function loadKnownModelsFromLogs() {
+  try {
+    const f = await api('/admin/logs/facets');
+    window.__knownModels = f.models || [];
+  } catch (e) { /* 日志已清空或无权限时忽略 */ }
+}
+
+/* ===== 可搜索下拉（Combo 组件） ===== */
+const comboCtls = {};
+
+/** 挂载（或重新挂载）一个可搜索下拉；Combo.attach 会自动卸载旧实例 */
+function mountCombo(id, def) {
+  const input = $(id);
+  if (!input) return null;
+  comboCtls[id] = Combo.attach(input, def);
+  return comboCtls[id];
+}
+
+function mountRouteCombos() {
+  // ① 对外模型名（可自由输入：列表里没有的名字直接敲进去）
+  mountCombo('r_model', {
+    allowFree: true,
+    getOptions: function () {
+      return knownModelNames().map(function (m) {
+        const ups = channelsForModel(m);
+        return { value: m, label: m, hint: ups ? '渠道 ' + ups : '' };
+      });
+    },
+    onPick: function (v, o) { onRModelChange(v, o); },
+    emptyText: '还没有任何模型名，可直接输入自定义名字',
+  });
+
+  // ② 添加渠道
+  mountCombo('r_channelPick', {
+    getOptions: function () {
+      return [{ value: '', label: '— 选择要添加的渠道 —' }].concat(
+        (window.__channels || [])
+          .filter(function (c) { return routeChannels.indexOf(c.id) < 0; })
+          .map(function (c) { return { value: c.id, label: channelLabel(c.id), hint: c.base_url || '' }; }));
+    },
+    onPick: function () { renderRouteChannels(); },
+    emptyText: '没有可添加的渠道',
+  });
+
+  // ③ 映射用：先选渠道
+  mountCombo('r_mapChannel', {
+    getOptions: function () {
+      return [{ value: '', label: '① 先选择渠道' }].concat(
+        (window.__channels || []).map(function (c) {
+          const n = channelOwnModels(c.id).length;
+          return { value: c.id, label: channelLabel(c.id), hint: n ? n + ' 个模型' : '未声明模型' };
+        }));
+    },
+    onPick: function (v) { onMapChannelChange(v); },
+    emptyText: '还没有渠道',
+  });
+
+  // ④ 映射用：再选模型（可自由输入该渠道上的真实模型名）
+  mountCombo('r_mapPickModel', {
+    allowFree: true,
+    freeHint: '自定义模型名（直接输入）',
+    getOptions: function () { return mapModelOptions(mapPickChannel); },
+    emptyText: '请先选择渠道',
+  });
+}
+
+/** 哪些渠道支持该模型（用于对外模型名下拉的副标题） */
+function channelsForModel(m) {
+  const ids = (window.__channels || [])
+    .filter(function (c) { return (c.models || []).indexOf(m) >= 0; })
+    .map(function (c) { return c.id; });
+  return ids.join(', ');
+}
+
+function fillModelSelect(current) {
+  setRouteModel(current || '');
+}
+
+/** 设置对外模型名：不在候选池中的就是自定义名，直接显示为输入框内容 */
+function setRouteModel(v) {
+  const ctl = comboCtls['r_model'];
+  const input = $('r_model');
+  if (ctl) ctl.setValue(v || '', v || '— 选择模型，或直接输入自定义名字 —');
+  else input.value = v || '';
+}
+
+/** 选中/输入对外模型名后的轻量提示（值由 saveRoute 统一读取） */
+function onRModelChange(v, o) {
+  const hint = $('r_modelHint');
+  if (!hint) return;
+  const name = String(v || '').trim();
+  const known = name && knownModelNames().indexOf(name) >= 0;
+  if (!name) return;
+  if (o && o.free) {
+    hint.classList.remove('err');
+    hint.textContent = '「' + name + '」是自定义对外模型名，客户端直接用这个名字调用；' +
+      '下游渠道若没有同名模型，请在下方映射为各渠道的真实模型名。';
+  } else if (!known) {
+    hint.classList.add('err');
+    hint.textContent = '「' + name + '」不在当前已知模型中，请确认名称，或为各渠道添加模型映射。';
+  }
+}
+
+function routeModelValue() {
+  return String(Combo.value($('r_model')) || '').trim();
+}
+
+function channelLabel(id) {
+  const c = (window.__channels || []).find(x => x.id === id);
+  return c && c.name ? id + ' · ' + c.name : id;
+}
+
+/** 渠道数据变化后：重挂渠道下拉并刷新映射下拉 */
+function fillChannelSelects() {
+  mountRouteCombos();
+  onMapChannelChange(Combo.value($('r_mapChannel')));
+}
+
+function renderRouteChannels() {
+  const box = $('r_channelList');
+  if (!routeChannels.length) {
+    box.innerHTML = '<div class="muted" style="padding:6px 2px">尚未添加渠道</div>';
+    return;
+  }
+  box.innerHTML = routeChannels.map((id, i) =>
+    '<div class="row" style="margin-bottom:6px">' +
+      '<span class="pill">' + (i + 1) + '</span>' +
+      '<span class="mono" style="flex:1">' + esc(channelLabel(id)) + '</span>' +
+      '<button class="mini ghost" title="上移"' + (i === 0 ? ' disabled' : '') + ' onclick="moveRouteChannel(' + i + ',-1)">↑</button>' +
+      '<button class="mini ghost" title="下移"' + (i === routeChannels.length - 1 ? ' disabled' : '') + ' onclick="moveRouteChannel(' + i + ',1)">↓</button>' +
+      '<button class="mini ghost" onclick="removeRouteChannel(' + i + ')">移除</button>' +
+    '</div>').join('');
+}
+
+function addRouteChannel() {
+  const id = Combo.value($('r_channelPick'));
+  if (!id) return toast('请先选择渠道', true);
+  if (routeChannels.includes(id)) return toast('该渠道已在列表中', true);
+  routeChannels.push(id);
+  const ctl = comboCtls['r_channelPick'];
+  if (ctl) ctl.setValue('', '— 选择要添加的渠道 —');
+  renderRouteChannels();
+  // 已添加的渠道从候选中移除
+  if (ctl) ctl.refresh();
+}
+
+function removeRouteChannel(i) {
+  routeChannels.splice(i, 1);
+  renderRouteChannels();
+}
+
+function moveRouteChannel(i, delta) {
+  const j = i + delta;
+  if (j < 0 || j >= routeChannels.length) return;
+  const tmp = routeChannels[i];
+  routeChannels[i] = routeChannels[j];
+  routeChannels[j] = tmp;
+  renderRouteChannels();
+}
+
+/** 某渠道可选的上游模型名：只列该渠道自己声明的模型；
+ *  渠道未声明模型（放通全部）时，才退回网关已知模型兜底。 */
+function upstreamModelsFor(chId) {
+  const ch = (window.__channels || []).find(c => c.id === chId);
+  const own = (ch ? ch.models || [] : []).filter(m => m && m !== '*');
+  if (own.length) {
+    return own.slice().sort();
+  }
+  // 渠道未限定模型：给出网关其他已知模型，避免无从下手
+  const outer = routeModelValue();
+  const all = knownModelNames();
+  return (outer && all.indexOf(outer) >= 0 ? [outer] : [])
+    .concat(all.filter(m => m !== outer).sort());
+}
+
+/** 该渠道是否声明了模型 */
+function channelOwnModels(chId) {
+  const ch = (window.__channels || []).find(c => c.id === chId);
+  return ch ? (ch.models || []).filter(m => m && m !== '*') : [];
+}
+
+function onRouteMapChange(i, v, o) {
+  routeMaps[i].custom = !!(o && o.free);
+  routeMaps[i].model = v;
+  renderRouteMaps();
+}
+
+/** 行内映射下拉的候选：只列该渠道的模型，分组提示来源 */
+function mapModelOptions(chId) {
+  if (!chId) return [];
+  const opts = upstreamModelsFor(chId);
+  const own = channelOwnModels(chId);
+  const group = own.length ? '该渠道的模型（' + own.length + '）' : '网关其他已知模型（该渠道未声明模型）';
+  return [{ value: '', label: '（跟随对外模型名，原样透传）' }]
+    .concat(opts.map(function (x) { return { value: x, label: x, group: group }; }));
+}
+
+function renderRouteMaps() {
+  const box = $('r_mapList');
+  if (!routeMaps.length) {
+    box.innerHTML = '<div class="muted" style="padding:6px 2px">无映射（模型名原样透传给上游）</div>';
+    Combo.refreshAll();
+    return;
+  }
+  box.innerHTML = routeMaps.map(function (m, i) {
+    const opts = upstreamModelsFor(m.channel);
+    const isCustom = m.model && opts.indexOf(m.model) < 0;
+    const input =
+      '<div class="combo" style="flex:1">' +
+        '<input class="mono combo-dyn" id="r_mapSel' + i + '" data-i="' + i + '" ' +
+          'placeholder="搜索该渠道的模型（' + opts.length + ' 个）" />' +
+      '</div>';
+    const customInput = isCustom
+      ? '<input class="mono" value="' + esc(m.model) + '" style="flex:1" placeholder="输入该渠道上的真实模型名" oninput="routeMaps[' + i + '].model=this.value" />'
+      : '';
+    const tip = opts.length ? '' : '<span class="muted">（该渠道未声明模型，请在渠道列表点「拉取模型」，或直接输入模型名）</span>';
+    return '<div class="row" style="margin-bottom:6px">' +
+      '<span class="mono" style="flex:1">' + esc(channelLabel(m.channel)) + '</span>' +
+      '<span class="muted">→</span>' + input + customInput + tip +
+      '<button class="mini ghost" onclick="removeRouteMap(' + i + ')">移除</button>' +
+    '</div>';
+  }).join('');
+
+  // 行内下拉逐个挂载（每次重渲染都是新节点）
+  routeMaps.forEach(function (m, i) {
+    const input = $('r_mapSel' + i);
+    if (!input) return;
+    const ctl = Combo.attach(input, {
+      allowFree: true,
+      freeHint: '自定义模型名（直接输入）',
+      getOptions: function () { return mapModelOptions(m.channel); },
+      onPick: function (v, o) { onRouteMapChange(i, v, o); },
+      emptyText: '该渠道未声明模型，可直接输入模型名',
+    });
+    // 回填当前值：不在候选池中的即自定义名，原样显示
+    ctl.setValue(m.model || '', m.model || '（跟随对外模型名，原样透传）');
+  });
+}
+
+/** 选择渠道后，右侧列出该渠道可用的模型（可搜索） */
+async function onMapChannelChange(chId) {
+  const ch = chId != null ? chId : Combo.value($('r_mapChannel'));
+  const ctl = comboCtls['r_mapPickModel'];
+  const hint = $('r_mapHint');
+  if (!ch) {
+    if (ctl) { ctl.setValue('', '— ② 再选择模型 —'); ctl.refresh(); }
+    hint.classList.remove('err');
+    hint.textContent = '先选渠道（可搜索），右侧会自动列出该渠道可用的模型名；不需要映射就选「（跟随对外模型名）」。';
+    return;
+  }
+
+  let opts = upstreamModelsFor(ch);
+  // 缓存里没有该渠道的模型时，直接现查渠道详情（保证拿到最新拉取的模型）
+  if (!opts.length) {
+    try {
+      const detail = await api('/admin/channels/' + encodeURIComponent(ch));
+      const models = (detail.models || []).filter(m => m && m !== '*');
+      const cached = (window.__channels || []).find(x => x.id === ch);
+      if (cached) cached.models = detail.models;
+      opts = models.concat(knownModelNames().filter(m => models.indexOf(m) < 0));
+    } catch (e) { /* 渠道可能已删除，下面会提示 */ }
+  }
+
+  mapPickChannel = ch;   // 记住当前渠道，供模型下拉取候选
+  if (ctl) {
+    const outer = routeModelValue();
+    ctl.setValue(outer && opts.indexOf(outer) >= 0 ? outer : '',
+      outer && opts.indexOf(outer) >= 0 ? outer : '（跟随对外模型名，原样透传）');
+    ctl.refresh();
+  }
+  const own = channelOwnModels(ch);
+  hint.classList.remove('err');
+  if (own.length) {
+    hint.textContent = '已选 ' + channelLabel(ch) + '，右侧为该渠道声明的 ' + own.length +
+      ' 个模型（可搜索）；不需要映射就选「（跟随对外模型名）」。';
+  } else if (opts.length) {
+    hint.textContent = '已选 ' + channelLabel(ch) + '：该渠道未声明模型（放通全部），下面列出网关其他已知模型；建议先在渠道列表点「拉取模型」。';
+  } else {
+    hint.innerHTML = '该渠道未声明任何模型 —— 请先在「渠道」列表点它的 <b>拉取模型</b>，或直接在上方输入框里手动输入模型名。';
+    hint.classList.add('err');
+  }
+}
+
+/** 选中映射模型后的轻量提示（值由 addRouteMap 统一读取） */
+function addRouteMap() {
+  const ch = Combo.value($('r_mapChannel')) || mapPickChannel;
+  if (!ch) return toast('请先选择渠道', true);
+  if (routeMaps.some(m => m.channel === ch)) {
+    return toast('该渠道已在本条路由中映射过（一条路由里一个渠道只对应一个上游模型）。若要同一渠道用多个上游模型，请为另一个对外模型名再建一条路由。', true);
+  }
+  let v = String(Combo.value($('r_mapPickModel')) || '').trim();
+  routeMaps.push({channel: ch, model: v, custom: false});
+  renderRouteMaps();
+  // 重置选择区，便于连续添加下一个渠道
+  const cc = comboCtls['r_mapChannel'];
+  if (cc) { cc.setValue('', '① 先选择渠道'); cc.refresh(); }
+  const cm = comboCtls['r_mapPickModel'];
+  if (cm) { cm.setValue('', '— ② 再选择模型 —'); cm.refresh(); }
+  mapPickChannel = '';
+  $('r_mapHint').classList.remove('err');
+  $('r_mapHint').textContent = '已加入。再选下一个渠道可继续添加映射。';
+}
+function removeRouteMap(i) {
+  routeMaps.splice(i, 1);
+  renderRouteMaps();
+}
+
+async function openRouteDlg(model) {
+  routeChannels = [];
+  routeMaps = [];
+  routeEditingModel = model ? decodeURIComponent(model) : '';
+  $('rtDlgHead').textContent = routeEditingModel ? '更新路由：' + routeEditingModel : '添加路由';
+  $('r_modelHint').classList.remove('err');
+  $('r_modelHint').textContent = routeEditingModel
+    ? '正在更新已有路由。保持对外模型名不变即为更新；改成新名字会新增一条路由（原路由保留）。'
+    : '可自由输入：列表里没有的名字直接敲进去即可（回车确认），输入内容会同时匹配模型名与渠道名。';
+  $('r_enabled').value = 'true';
+  // 始终取最新渠道/路由数据，避免缓存陈旧导致模型下拉为空
+  try {
+    window.__channels = await api('/admin/channels');
+    window.__routes = await api('/admin/routes');
+  } catch (e) { toast(e.message, true); }
+  fillChannelSelects();
+  const routes = window.__routes || [];
+  await loadKnownModelsFromLogs();
+  fillModelSelect(model ? decodeURIComponent(model) : '');
+
+  if (model) {
+    try {
+      const rt = routes.find(r => r.model === decodeURIComponent(model));
+      if (rt) {
+        routeChannels = (rt.channels || []).slice();
+        routeMaps = Object.entries(rt.model_map || {}).map(([channel, m]) => ({channel: channel, model: m, custom: false}));
+        $('r_enabled').value = rt.enabled === false ? 'false' : 'true';
+      }
+    } catch (e) { toast(e.message, true); }
+  }
+  renderRouteChannels();
+  renderRouteMaps();
+  $('rtDlg').showModal();
+}
+
+/** 以现有路由为模板新建：保留渠道顺序，清空映射模型与对外名，由用户另选 */
+async function copyRoute(model) {
+  const src = decodeURIComponent(model);
+  try {
+    if (!window.__routes) window.__routes = await api('/admin/routes');
+    const rt = window.__routes.find(r => r.model === src);
+    routeChannels = [];
+    routeMaps = [];
+    routeEditingModel = '';   // 复制 = 新建，不走更新语义
+    if (rt) {
+      routeChannels = (rt.channels || []).slice();
+      routeMaps = Object.keys(rt.model_map || {}).map(ch => ({channel: ch, model: '', custom: false}));
+    }
+    $('r_enabled').value = 'true';
+    if (!window.__channels) window.__channels = await api('/admin/channels');
+    fillChannelSelects();
+    await loadKnownModelsFromLogs();
+    fillModelSelect('');
+
+    // 对外模型名留空，直接在同一个输入框里填写新名字
+    setRouteModel('');
+    $('rtDlgHead').textContent = '添加路由（复制自 ' + src + '）';
+    $('r_model').placeholder = '新的对外模型名，如 gpt-4o / claude-3';
+    $('r_modelHint').classList.remove('err');
+    $('r_modelHint').textContent = '已复制路由 ' + src + ' 的渠道顺序，请填写新的对外模型名（可直接输入，不限于列表中的模型），并为各渠道选择该模型下的上游模型名。';
+
+    renderRouteChannels();
+    renderRouteMaps();
+    $('rtDlg').showModal();
+    $('r_model').focus();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function saveRoute() {
+  const modelName = routeModelValue();
+  if (!modelName) return toast('请选择或填写对外模型名', true);
+  if (!routeChannels.length) return toast('请至少添加一个渠道', true);
+  // 更新语义：名字必须保持不变，否则会变成「另建一条」，原路由还在
+  if (routeEditingModel && modelName !== routeEditingModel &&
+    !confirm('对外模型名已从「' + routeEditingModel + '」改为「' + modelName + '」。\n' +
+      '保存后会新增一条「' + modelName + '」路由，原来的「' + routeEditingModel + '」仍然保留。\n' +
+      '确定要改名吗？')) return;
+  const modelMap = {};
+  routeMaps.forEach(m => {
+    const v = (m.model || '').trim();
+    if (m.custom && !v) { toast('存在未填写模型名的映射行', true); return; }
+    if (v) modelMap[m.channel] = v;
+  });
+  const body = {
+    model: modelName,
+    channels: routeChannels,
+    model_map: Object.keys(modelMap).length ? modelMap : null,
+    enabled: $('r_enabled').value === 'true'
+  };
+  try {
+    await api('/admin/routes', {method: 'POST', body: JSON.stringify(body)});
+    window.__routes = null;
+    $('rtDlg').close();
+    toast(modelName === routeEditingModel && routeEditingModel
+      ? '路由「' + modelName + '」已更新'
+      : '路由「' + modelName + '」已创建');
+    refresh();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function delRoute(model) {
+  if (!confirm('删除路由 ' + decodeURIComponent(model) + ' ?')) return;
+  try {
+    await api('/admin/routes/' + model, {method: 'DELETE'});
+    window.__routes = null;
+    refresh();
+  } catch (e) { toast(e.message, true); }
+}
+
+initToken();
+refresh();
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>

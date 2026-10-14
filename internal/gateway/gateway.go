@@ -90,6 +90,8 @@ func (s *Server) Handler() http.Handler {
 
 	// 内置管理页面
 	mux.Handle("GET /{$}", webui.Handler())
+	mux.Handle("GET /channels", webui.ChannelsHandler())
+	mux.Handle("GET /routes", webui.RoutesHandler())
 	mux.Handle("GET /logs", webui.LogsHandler())
 	mux.Handle("GET /diagnostics", webui.DiagnosticsHandler())
 	mux.Handle("GET /chat", webui.ChatHandler())

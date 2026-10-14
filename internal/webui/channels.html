@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>渠道 · apitoken</title>
+<link rel="stylesheet" href="/static/style.css" />
+<script>(function(){try{var t=localStorage.getItem('apitoken_theme')||'auto';if(t==='auto'){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';}document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+</head>
+<body>
+<header>
+  <h1>⚡ apitoken</h1>
+  <nav>
+    <a href="/">控制台</a>
+    <a href="/channels" class="active">渠道</a>
+    <a href="/routes">路由</a>
+    <a href="/logs">调用日志</a>
+    <a href="/diagnostics">测试</a>
+    <a href="/chat">对话</a>
+    <a href="/settings">设置</a>
+  </nav>
+  <span class="tag" id="ver">-</span>
+  <span class="sp"></span>
+  <input id="token" placeholder="管理令牌 adm-xxx" style="width:190px" />
+  <button class="ghost" onclick="saveToken()">保存</button>
+  <button class="ghost" onclick="refresh()">刷新</button>
+</header>
+
+<main>
+  <section>
+    <h2>渠道（上游平台账号）<span class="sp"></span>
+      <input id="chFilter" class="mini" style="width:200px" placeholder="筛选：名称 / ID / 模型名" oninput="renderChannels()" />
+      <span class="muted mono" id="chCount"></span>
+      <button onclick="openDlg()">+ 添加渠道</button>
+    </h2>
+    <table>
+      <thead><tr>
+        <th>名称</th><th>Base URL</th><th>密钥</th><th>模型</th>
+        <th>优先级/权重</th><th>状态</th><th>请求/成功/失败</th><th>操作</th>
+      </tr></thead>
+      <tbody id="chBody"></tbody>
+    </table>
+    <p class="hint">模型只展示前几个，点「+N 个」展开；筛选框可按模型名反查渠道（例如输入 kimi 找出支持该模型的全部渠道）。</p>
+  </section>
+</main>
+
+<dialog id="chDlg" style="width:min(880px,95vw)">
+  <div class="dlg-head" id="chDlgTitle">添加渠道</div>
+  <div class="dlg-body">
+    <div class="grid">
+      <div><label>名称</label><input id="f_name" placeholder="例如：DeepSeek 官方" /></div>
+      <div><label>渠道 ID（留空自动生成）</label><input id="f_id" placeholder="deepseek-1" /></div>
+      <div style="grid-column:1/-1"><label>Base URL（到 /v1 这一层，不含 /chat/completions）</label>
+        <input id="f_base_url" list="urlHints" placeholder="https://api.deepseek.com/v1" />
+        <datalist id="urlHints">
+          <option value="https://api.deepseek.com/v1">DeepSeek</option>
+          <option value="https://token.sensenova.cn/v1">商汤日日新</option>
+          <option value="https://api.sensenova.cn/compatible-mode/v2">商汤 compatible-mode</option>
+          <option value="https://api.copilot.tencent.com/api/v1">腾讯云 WorkBuddy</option>
+          <option value="https://opencode.ai/zen/v1">OpenCode Zen</option>
+          <option value="https://api.stepfun.com/v1">阶跃星辰 StepFun</option>
+          <option value="https://api.stepfun.com/step_plan/v1">阶跃星辰 Coding Plan</option>
+          <option value="https://api.openai.com/v1">OpenAI</option>
+        </datalist>
+      </div>
+      <div><label>API Key</label>
+        <div class="row" style="gap:6px">
+          <input id="f_api_key" type="password" class="secret" placeholder="sk-..." />
+          <button class="mini ghost" onclick="toggleChKey()">显示</button>
+          <button class="mini ghost" onclick="revealChannelKey()">查看已保存</button>
+        </div>
+      </div>
+      <div><label>鉴权方式</label><select id="f_auth_style" onchange="onAuthChange()">
+        <option value="bearer">Bearer（默认，OpenAI 兼容通用）</option>
+        <option value="header">自定义头（直接放 key）</option>
+        <option value="query">URL 参数 ?key=</option>
+      </select></div>
+      <div id="wrap_auth_header" style="display:none"><label>鉴权头名称</label><input id="f_auth_header" placeholder="X-API-Key" /></div>
+      <div><label>优先级（越小越优先）</label><input id="f_priority" type="number" value="10" /></div>
+      <div><label>权重</label><input id="f_weight" type="number" value="1" /></div>
+      <div><label>超时（秒，0 用默认）</label><input id="f_timeout" type="number" value="0" /></div>
+      <div><label>状态</label><select id="f_enabled"><option value="true">启用</option><option value="false">停用</option></select></div>
+      <div style="grid-column:1/-1"><label>支持的模型（逗号分隔，留空=放通全部）</label><input id="f_models" placeholder="deepseek-chat, deepseek-reasoner" /></div>
+      <div style="grid-column:1/-1"><label>备注</label><input id="f_note" /></div>
+    </div>
+    <p class="hint">Base URL 填到 <code>/v1</code> 这一层即可，请求路径默认 <code>/chat/completions</code>。腾讯专享版把 Base URL 换成 <code>https://{enterpriseId}.copilot.qq.com/api/v1</code>；阶跃 Coding Plan 用 <code>/step_plan/v1</code>。</p>
+    <div id="probeResult"></div>
+  </div>
+  <div class="dlg-foot">
+    <button class="ghost" onclick="probeChannel()">测试连通性</button>
+    <button class="ghost" onclick="loadUpstreamModels()">拉取模型</button>
+    <span class="sp" style="flex:1"></span>
+    <button class="ghost" onclick="document.getElementById('chDlg').close()">取消</button>
+    <button onclick="saveChannel()">保存</button>
+  </div>
+</dialog>
+
+<dialog id="mdlDlg">
+  <div class="dlg-head">选择上游模型（勾选后写入「支持的模型」）</div>
+  <div class="dlg-body">
+    <div class="row" style="margin-bottom:8px">
+      <input id="mdlSearch" placeholder="搜索模型名（可输入关键词过滤）" oninput="renderModelPickList()" style="flex:1" />
+      <button class="mini ghost" onclick="toggleAllModels(true)">全选</button>
+      <button class="mini ghost" onclick="toggleAllModels(false)">全不选</button>
+    </div>
+    <div class="row" style="margin-bottom:8px">
+      <span class="muted" id="mdlCount"></span>
+    </div>
+    <div id="mdlList" style="max-height:320px;overflow:auto"></div>
+  </div>
+  <div class="dlg-foot">
+    <button class="ghost" onclick="document.getElementById('mdlDlg').close()">取消</button>
+    <button onclick="applyModels()">写入</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/app.js"></script>
+<script src="/static/combo.js"></script>
+<script>
+let editingId = null;
+let fetchedModels = [];
+let modelPicked = new Set();   // 拉取模型弹窗中已勾选的模型
+
+async function refresh() {
+  try {
+    const [info, channels] = await Promise.all([
+      api('/admin/api-info'), api('/admin/channels')
+    ]);
+    $('ver').textContent = 'v' + info.version + ' · 运行 ' + info.uptime + ' · 策略 ' + (info.routing?.strategy || '-');
+    window.__channels = channels;
+    renderChannels(channels);
+  } catch (e) { toast(e.message, true); }
+}
+
+function host(url) {
+  try { return new URL(url).host; } catch (e) { return url || '-'; }
+}
+
+/** 密钥列：固定宽度显示（不因长密钥撑宽表格），悬停看掩码，可一键复制明文 */
+function keyCell(c) {
+  const k = c.api_key || '';
+  if (!k) return '<span class="muted">未设置</span>';
+  return `<span class="key-cell" title="${esc(k)}">${esc(k)}</span>` +
+    `<button class="linkbtn" onclick="copyKey('${esc(c.id)}')" title="复制完整密钥到剪贴板">复制</button>`;
+}
+
+async function copyKey(id) {
+  try {
+    const list = await api('/admin/channels?reveal=1');
+    const c = (list || []).find(x => x.id === id);
+    if (!c || !c.api_key) return toast('未找到该渠道的密钥', true);
+    copyText(c.api_key);
+  } catch (e) { toast(e.message, true); }
+}
+const MODEL_PREVIEW = 6;
+function modelCell(c) {
+  const ms = c.models || [];
+  if (!ms.length) return '<span class="muted">全部模型（放通）</span>';
+  const chip = m => `<span class="mdl-chip" title="${esc(m)}">${esc(m)}</span>`;
+  const head = ms.slice(0, MODEL_PREVIEW).map(chip).join('');
+  if (ms.length <= MODEL_PREVIEW) return `<div class="mdl-cell"><div class="mdl-clamp">${head}</div></div>`;
+  // 折叠状态下只渲染前 MODEL_PREVIEW 个，其余等展开时再插入 DOM
+  return `<div class="mdl-cell" id="mdl-${esc(c.id)}">
+    <div class="mdl-clamp">${head}</div>
+    <div class="mdl-foot">
+      <button class="linkbtn" data-n="${ms.length}" onclick="toggleModels('${esc(c.id)}')">共 ${ms.length} 个 · 展开 ▾</button>
+      <button class="linkbtn" onclick="copyModels('${esc(c.id)}')">复制</button>
+    </div>
+  </div>`;
+}
+
+/** 展开 / 收起某个渠道的模型列表（展开时才把剩余模型插入 DOM） */
+function toggleModels(id) {
+  const box = $('mdl-' + id);
+  if (!box) return;
+  const btn = box.querySelector('.linkbtn');
+  const rest = box.querySelector('.mdl-rest');
+  if (rest) {                                   // 已展开 -> 收起并移除多余节点
+    rest.remove();
+    box.classList.remove('open');
+    if (btn) btn.textContent = '共 ' + btn.dataset.n + ' 个 · 展开 ▾';
+    return;
+  }
+  const c = (window.__channels || []).find(x => x.id === id);
+  const ms = (c && c.models) || [];
+  if (ms.length <= MODEL_PREVIEW) return;
+  const div = document.createElement('div');
+  div.className = 'mdl-rest';
+  div.innerHTML = ms.slice(MODEL_PREVIEW)
+    .map(m => `<span class="mdl-chip" title="${esc(m)}">${esc(m)}</span>`).join('');
+  box.insertBefore(div, box.querySelector('.mdl-foot'));
+  box.classList.add('open');
+  if (btn) btn.textContent = '收起 ▴';
+}
+
+/** 复制该渠道全部模型名（每行一个） */
+function copyModels(id) {
+  const c = (window.__channels || []).find(x => x.id === id);
+  if (!c || !(c.models || []).length) return toast('该渠道未单独声明模型', true);
+  copyText((c.models || []).join('\n'));
+}
+function renderChannels(list) {
+  const all = list || window.__channels || [];
+  const kw = ($('chFilter') ? $('chFilter').value : '').trim().toLowerCase();
+  const rows = kw ? all.filter(c =>
+    [c.name, c.id, c.base_url].concat(c.models || []).join(' ').toLowerCase().includes(kw)) : all;
+  if ($('chCount')) $('chCount').textContent = kw ? rows.length + ' / ' + all.length : '';
+  $('chBody').innerHTML = rows.map(c => {
+    const st = c.stats || {};
+    const health = c.health || '';
+    const healthPill = health === 'healthy' ? '<span class="pill healthy" title="最近一次连通性测试通过">连通正常</span>'
+      : health === 'unhealthy' ? '<span class="pill unhealthy" title="最近一次连通性测试失败">连通异常</span>'
+      : '';
+    const auth = (c.auth_style || 'bearer') === 'bearer' ? '' :
+      `<span class="pill" title="鉴权方式">${esc(c.auth_style)}${c.auth_header ? ':' + esc(c.auth_header) : ''}</span>`;
+    return `<tr>
+      <td class="ch-name"><b>${esc(c.name)}</b>${healthPill}<div class="muted mono">${esc(c.id)}</div></td>
+      <td class="mono url-td"><div>${esc(host(c.base_url))}</div><div class="muted u-full" title="${esc(c.base_url)}">${esc(c.base_url)}</div>${auth}</td>
+      <td class="mono muted key-td">${keyCell(c)}</td>
+      <td class="mono mdl-td">${modelCell(c)}</td>
+      <td class="mono nowrap">P${c.priority} / W${c.weight}</td>
+      <td class="nowrap">
+        <span class="pill ${c.enabled ? 'on' : 'off'}">${c.enabled ? '启用' : '停用'}</span>
+
+        ${health === 'unhealthy' && c.last_error ? `<div class="mono err" style="max-width:200px;overflow:hidden;text-overflow:ellipsis" title="最近错误：${esc(c.last_error)}">${esc(c.last_error)}</div>` : ''}
+      </td>
+      <td class="mono nowrap">${fmt(st.requests)}/${fmt(st.success)}/${fmt(st.failed)}<div class="muted">${fmt(st.prompt_tokens + st.completion_tokens)} tok</div></td>
+      <td class="nowrap">
+        <button class="mini" onclick="testChannel('${c.id}')">测试</button>
+        <button class="mini ghost" onclick="fetchUpstreamModels('${c.id}')">拉模型</button>
+        <button class="mini ghost" onclick="openDlg('${c.id}')">编辑</button>
+        <button class="mini ghost" onclick="toggleChannel('${c.id}',${!c.enabled})">${c.enabled ? '停用' : '启用'}</button>
+        <button class="mini danger" onclick="delChannel('${c.id}')">删除</button>
+      </td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="8" class="empty">${kw ? '没有匹配的渠道，换个关键词试试' : '还没有渠道，点击右上角添加'}</td></tr>`;
+}
+
+function onAuthChange() {
+  $('wrap_auth_header').style.display = $('f_auth_style').value === 'header' ? '' : 'none';
+}
+
+function openDlg(id) {
+  editingId = id || null;
+  $('chDlgTitle').textContent = id ? '编辑渠道' : '添加渠道';
+  $('f_api_key').value = '';
+  $('f_api_key').type = 'password';
+  $('f_api_key').classList.remove('revealed');
+  if (!id) {
+    ['f_id', 'f_name', 'f_base_url', 'f_models', 'f_note', 'f_auth_header'].forEach(i => $(i).value = '');
+    $('f_priority').value = 10; $('f_weight').value = 1; $('f_timeout').value = 0;
+    $('f_enabled').value = 'true'; $('f_auth_style').value = 'bearer';
+    onAuthChange();
+  } else {
+    api('/admin/channels/' + encodeURIComponent(id)).then(c => {
+      $('f_name').value = c.name || ''; $('f_base_url').value = c.base_url || '';
+      $('f_id').value = c.id; $('f_models').value = (c.models || []).join(',');
+      $('f_priority').value = c.priority; $('f_weight').value = c.weight; $('f_timeout').value = c.timeout_sec || 0;
+      $('f_enabled').value = c.enabled ? 'true' : 'false';
+      $('f_auth_style').value = c.auth_style || 'bearer';
+      $('f_auth_header').value = c.auth_header || '';
+      $('f_note').value = c.note || '';
+      onAuthChange();
+    });
+  }
+  $('chDlg').showModal();
+}
+
+async function toggleChKey() {
+  const el = $('f_api_key');
+  el.type = el.type === 'password' ? 'text' : 'password';
+}
+
+async function revealChannelKey() {
+  const id = $('f_id').value.trim() || editingId;
+  if (!id) return toast('请先填写渠道 ID 或保存后再查看', true);
+  if (!confirm('即将显示该渠道已保存的完整 API Key，请确认环境安全。\n\n是否继续？')) return;
+  try {
+    const list = await api('/admin/channels?reveal=1');
+    const ch = list.find(c => c.id === id);
+    if (!ch) return toast('未找到渠道 ' + id, true);
+    $('f_api_key').value = ch.api_key || '';
+    $('f_api_key').type = 'text';
+    $('f_api_key').classList.add('revealed');
+    toast('已显示 ' + id + ' 的密钥');
+  } catch (e) { toast('获取失败：' + e.message, true); }
+}
+
+async function saveChannel() {
+  const body = {
+    id: $('f_id').value.trim(),
+    name: $('f_name').value.trim(),
+    base_url: $('f_base_url').value.trim(),
+    api_key: $('f_api_key').value.trim(),
+    models: $('f_models').value.split(',').map(s => s.trim()).filter(Boolean),
+    auth_style: $('f_auth_style').value,
+    auth_header: $('f_auth_header').value.trim(),
+    priority: +$('f_priority').value || 0,
+    weight: +$('f_weight').value || 1,
+    timeout_sec: +$('f_timeout').value || 0,
+    enabled: $('f_enabled').value === 'true',
+    note: $('f_note').value.trim()
+  };
+  try {
+    if (editingId) await api('/admin/channels/' + encodeURIComponent(editingId), {method: 'PUT', body: JSON.stringify(body)});
+    else await api('/admin/channels', {method: 'POST', body: JSON.stringify(body)});
+    $('chDlg').close(); toast('已保存'); refresh();
+  } catch (e) { toast(e.message, true); }
+}
+
+// 收集当前弹窗里的渠道配置（未保存）
+function channelDraft() {
+  return {
+    id: $('f_id').value.trim(),
+    name: $('f_name').value.trim(),
+    base_url: $('f_base_url').value.trim(),
+    api_key: $('f_api_key').value.trim(),
+    models: $('f_models').value.split(',').map(s => s.trim()).filter(Boolean),
+    auth_style: $('f_auth_style').value,
+    auth_header: $('f_auth_header').value.trim(),
+    chat_path: '',
+    priority: +$('f_priority').value || 0,
+    weight: +$('f_weight').value || 1,
+    timeout_sec: +$('f_timeout').value || 0,
+    enabled: $('f_enabled').value === 'true',
+    note: $('f_note').value.trim()
+  };
+}
+
+function showProbe(html) { $('probeResult').innerHTML = html; }
+
+async function probeChannel() {
+  const draft = channelDraft();
+  if (!draft.base_url) return toast('请先填写 Base URL', true);
+  if (!draft.api_key) return toast('请先填写 API Key', true);
+  showProbe('<div class="hint">正在测试连通性…</div>');
+  $('chDlg').style.opacity = '0.75';
+  try {
+    const r = await api('/admin/channels/test', {method: 'POST', body: JSON.stringify(draft)});
+    if (r.ok) {
+      showProbe('<div class="probe-box ok">' +
+        '<b class="ok">连通正常</b> <span class="muted">' + fmtLatency(r.latency_ms) + ' · 模型 ' + esc(r.model) +
+        ' · token ' + fmt(r.usage.prompt_tokens) + '/' + fmt(r.usage.completion_tokens) + '</span>' +
+        (r.reply ? '<pre class="log" style="margin-top:8px">' + esc(r.reply) + '</pre>' : '') + '</div>');
+      if (!$('f_models').value && draft.models.length) $('f_models').value = draft.models.join(', ');
+    } else {
+      showProbe('<div class="probe-box bad">' +
+        '<b class="err">测试失败</b> <span class="muted">HTTP ' + (r.status || '-') + ' · ' + fmtLatency(r.latency_ms) + '</span>' +
+        '<pre class="log" style="margin-top:8px">' + esc(r.error || '未知错误') + '</pre></div>');
+    }
+  } catch (e) {
+    showProbe('<div class="hint err">' + esc(e.message) + '</div>');
+  } finally {
+    $('chDlg').style.opacity = '';
+  }
+}
+
+async function loadUpstreamModels() {
+  const draft = channelDraft();
+  if (!draft.base_url) return toast('请先填写 Base URL', true);
+  if (!draft.api_key) return toast('请先填写 API Key', true);
+  showProbe('<div class="hint">正在拉取上游模型…</div>');
+  try {
+    // 拉取模型是读取操作，走 GET：草稿配置放在 query 里
+    const q = new URLSearchParams({
+      base_url: draft.base_url,
+      api_key: draft.api_key,
+      auth_style: draft.auth_style,
+      auth_header: draft.auth_header,
+      timeout_sec: draft.timeout_sec
+    });
+    const r = await api('/admin/channels/models?' + q.toString());
+    fetchedModels = r.models || [];
+    if (!fetchedModels.length) {
+      showProbe('<div class="hint">上游未返回模型列表，请手动填写模型名（留空表示放通全部）。</div>');
+      return;
+    }
+    modelPicked = new Set(draft.models || []);
+    $('mdlSearch').value = '';
+    renderModelPickList();
+    $('mdlDlg').showModal();
+  } catch (e) {
+    showProbe('<div class="hint err">拉取失败：' + esc(e.message) + '<br>若上游没有 /models 接口，请手动填写模型名。</div>');
+  }
+}
+
+/** 渲染模型勾选列表：按关键词过滤（模型名模糊匹配），保持已有勾选状态 */
+function renderModelPickList() {
+  const kw = ($('mdlSearch').value || '').trim().toLowerCase();
+  const hit = kw ? fetchedModels.filter(m => m.toLowerCase().includes(kw)) : fetchedModels;
+  $('mdlList').innerHTML = hit.map(m =>
+    '<label class="mchk-row"><input type="checkbox" class="mchk" value="' + esc(m) + '" style="width:auto"' +
+    (modelPicked.has(m) ? ' checked' : '') + ' onchange="onModelPick(this)" />' +
+    '<span class="mono">' + (kw ? Combo.hl(m, kw) : esc(m)) + '</span></label>').join('')
+    || '<div class="muted" style="padding:10px;text-align:center">没有匹配「' + esc(kw) + '」的模型</div>';
+  updateModelCount(hit.length);
+}
+
+/** 勾选/取消单个模型：同步回 modelPicked（过滤视图只显示部分，未显示项的勾选状态保留） */
+function onModelPick(cb) {
+  if (cb.checked) modelPicked.add(cb.value);
+  else modelPicked.delete(cb.value);
+  updateModelCount();
+}
+
+function updateModelCount(visible) {
+  const vis = visible == null ? '' : '，当前显示 ' + visible + ' 个';
+  $('mdlCount').textContent = '上游共 ' + fetchedModels.length + ' 个模型，已选 ' + modelPicked.size + ' 个' + vis;
+}
+
+/** 全选/全不选：作用范围为当前过滤后的可见项，避免误选大量模型 */
+function toggleAllModels(checked) {
+  const kw = ($('mdlSearch').value || '').trim().toLowerCase();
+  const hit = kw ? fetchedModels.filter(m => m.toLowerCase().includes(kw)) : fetchedModels;
+  hit.forEach(m => { if (checked) modelPicked.add(m); else modelPicked.delete(m); });
+  renderModelPickList();
+}
+
+function applyModels() {
+  // 兜底：把当前可见勾选框的状态再合入一次（防止个别环境 change 事件未触发）
+  document.querySelectorAll('#mdlList .mchk').forEach(cb => {
+    if (cb.checked) modelPicked.add(cb.value);
+    else modelPicked.delete(cb.value);
+  });
+  $('f_models').value = Array.from(modelPicked).join(', ');
+  $('mdlDlg').close();
+  showProbe('<div class="hint ok">已写入 ' + modelPicked.size + ' 个模型到「支持的模型」。</div>');
+}
+async function delChannel(id) {
+  if (!confirm('确认删除渠道 ' + id + ' ?')) return;
+  try { await api('/admin/channels/' + encodeURIComponent(id), {method: 'DELETE'}); toast('已删除'); refresh(); }
+  catch (e) { toast(e.message, true); }
+}
+async function toggleChannel(id, enabled) {
+  try { await api('/admin/channels/' + encodeURIComponent(id) + '/toggle', {method: 'POST', body: JSON.stringify({enabled})}); refresh(); }
+  catch (e) { toast(e.message, true); }
+}
+async function testChannel(id) {
+  toast('测试中…');
+  try {
+    const r = await api('/admin/channels/' + encodeURIComponent(id) + '/test', {method: 'POST', body: '{}'});
+    toast(r.ok ? `连通正常 ${fmtLatency(r.latency_ms)} ｜ 模型 ${r.model} ｜ 回复: ${(r.reply || '').slice(0, 60)}` : '失败: ' + r.error, !r.ok);
+    refresh();
+  } catch (e) { toast(e.message, true); refresh(); }
+}
+async function fetchUpstreamModels(id) {
+  toast('拉取上游模型…');
+  try {
+    // 读取操作用 GET；写入模型列表时才用 POST + apply=1
+    const r = await api('/admin/channels/' + encodeURIComponent(id) + '/models');
+    if (r.models && r.models.length) {
+      if (confirm('发现 ' + r.models.length + ' 个模型：\n' + r.models.slice(0, 25).join('\n') + '\n\n是否写入该渠道？')) {
+        await api('/admin/channels/' + encodeURIComponent(id) + '/models', {method: 'POST', body: JSON.stringify({apply: true})});
+      }
+    } else toast('上游未返回模型列表');
+    refresh();
+  } catch (e) { toast(e.message, true); }
+}
+
+initToken();
+refresh();
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>

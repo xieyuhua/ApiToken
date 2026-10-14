@@ -12,17 +12,17 @@ import (
 func TestRouteDialogSearchableCombos(t *testing.T) {
 	h := newTestGateway(t, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/routes", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	body := rec.Body.String()
 	if rec.Code != http.StatusOK {
-		t.Fatalf("控制台不可访问: %d", rec.Code)
+		t.Fatalf("路由页不可访问: %d", rec.Code)
 	}
 
 	// 必须引入 combo 组件
 	if !strings.Contains(body, "/static/combo.js") {
-		t.Fatal("控制台未引入 combo.js")
+		t.Fatal("路由页未引入 combo.js")
 	}
 	// 四个下拉都不能再是原生 select
 	for _, id := range []string{"r_model", "r_channelPick", "r_mapChannel", "r_mapPickModel"} {
@@ -74,7 +74,7 @@ func TestRouteDialogSearchableCombos(t *testing.T) {
 // 保存就会多出一条同名路由；因此编辑态必须保持原名、改名需二次确认。
 func TestRouteEditKeepsModelName(t *testing.T) {
 	h := newTestGateway(t, nil)
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/routes", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	body := rec.Body.String()
@@ -112,7 +112,7 @@ func TestRouteEditKeepsModelName(t *testing.T) {
 // 旧的「其他…（自定义名称）」选项排在列表末尾，会被 MAX_LIST 截断后根本点不到。
 func TestRouteModelNameFreeInput(t *testing.T) {
 	h := newTestGateway(t, nil)
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/routes", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	body := rec.Body.String()
@@ -158,7 +158,7 @@ func TestRouteModelNameFreeInput(t *testing.T) {
 // 上游可达 469 个模型，逐条勾选不现实；全选还必须只作用于当前过滤结果。
 func TestModelPickListSearchable(t *testing.T) {
 	h := newTestGateway(t, nil)
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/channels", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	body := rec.Body.String()

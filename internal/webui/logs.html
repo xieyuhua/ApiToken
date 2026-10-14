@@ -14,6 +14,8 @@
         <h1>⚡ apitoken</h1>
         <nav>
             <a href="/">控制台</a>
+            <a href="/channels">渠道</a>
+            <a href="/routes">路由</a>
             <a href="/logs" class="active">调用日志</a>
             <a href="/diagnostics">测试</a>
             <a href="/chat">对话</a>
@@ -108,27 +110,6 @@
             </div>
         </section>
 
-        <section>
-            <h2>聚合分析<span class="sp"></span><span class="muted" style="font-size:12px">基于当前筛选条件</span></h2>
-            <div class="pad">
-                <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr))">
-                    <div>
-                        <label>按模型（次数 / 平均延迟）</label>
-                        <div class="bars" id="barModel"></div>
-                    </div>
-                    <div>
-                        <label>按渠道（次数 / 平均延迟）</label>
-                        <div class="bars" id="barChannel"></div>
-                    </div>
-                    <div>
-                        <label>按状态码</label>
-                        <div class="bars" id="barStatus"></div>
-                    </div>
-                </div>
-                <label style="margin-top:14px">高频错误</label>
-                <div class="bars" id="barError"></div>
-            </div>
-        </section>
     </main>
 
     <dialog id="detailDlg">
@@ -170,10 +151,6 @@
                 renderCards(data.stats, data);
                 renderTable(data.items);
                 renderPager(data);
-                renderBars('barModel', data.stats.by_model, { showLatency: true });
-                renderBars('barChannel', data.stats.by_channel, { showLatency: true });
-                renderBars('barStatus', data.stats.by_status);
-                renderBars('barError', (data.stats.top_errors || []).map(e => ({ name: e.name, count: e.count, failed: e.count })));
                 $('meta').textContent = '共 ' + fmt(data.kept) + ' 条内存日志';
                 await loadFacets();
             } catch (e) { toast(e.message, true); }

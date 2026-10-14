@@ -259,7 +259,7 @@ function testCombo() {
 }
 
 /* ------------------------------------------------------------------ *
- * 2. 路由弹窗（index.html 内联脚本 + combo.js）
+ * 2. 路由弹窗（routes.html 内联脚本 + combo.js）
  * ------------------------------------------------------------------ */
 function testRouteDialog() {
   section('路由弹窗：编辑必须落在同名路由上');
@@ -290,7 +290,7 @@ function testRouteDialog() {
     return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(data)) });
   };
 
-  const html = read('internal/webui/index.html');
+  const html = read('internal/webui/routes.html');
   const inline = html.split('<script>').pop().split('</script>')[0];
   // app.js + combo.js + 页面内联脚本必须放在同一次 eval 里（共享 const 作用域）
   (0, eval)([read('internal/webui/static/app.js'), read('internal/webui/static/combo.js'), inline].join('\n;\n'));
@@ -395,7 +395,7 @@ function testStatic() {
   section('静态约束');
   const chatJs = read('internal/webui/static/chat.js');
   const chatHtml = read('internal/webui/chat.html');
-  const idx = read('internal/webui/index.html');
+  const idx = read('internal/webui/routes.html');
 
   assert(/static\/combo\.js/.test(chatHtml), 'chat 页已引入 combo.js');
   assert(!/function renderModelList|function pickModel|MODEL_LIST_MAX/.test(chatJs),
