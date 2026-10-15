@@ -90,8 +90,9 @@ func (s *Store) flushStats() {
 	if s.statsFile == "" {
 		return
 	}
-	s.statsSaveMu.Lock()
-	defer s.statsSaveMu.Unlock()
+	// 与 gateway.json 的写盘共用 persistMu：两条持久化路径互斥，避免同时刷盘互相抖动
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
 
 	// 小时桶需要在写锁下清理过期数据，故快照整体走写锁而非读锁：
 	// 清理与快照在同一临界区内，落盘的 Hourly 保证已剔除过期桶。

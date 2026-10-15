@@ -7,6 +7,7 @@
  *   3. 路由弹窗：编辑保存的是更新而非新增、改名需确认、标题随状态变化
  *   4. 数字格式化：Token 用量 ≥100 万显示为 M、≥10 亿显示为 B
  *   5. 对话页连接历史：保存去重、切换回填、删除
+ *   6. 用量趋势图：鼠标/触屏悬浮显示该小时明细
  *
  * 运行：node tools/webui_test.js
  */
@@ -493,6 +494,103 @@ function testChatConns() {
     '删除选中历史连接');
 }
 
+/* ------------------------------------------------------------------ *
+ * 6. 用量趋势图：鼠标/触屏悬浮显示该小时的完整明细
+ * ------------------------------------------------------------------ */
+function testTrendTip() {
+  section('用量趋势图悬浮明细');
+  installDom(); // 换新 DOM，避免复用前面用例留下的节点
+
+  // Canvas 在 Node 里不存在，这里放一个只记录调用的替身
+  const ops = [];
+  const ctxStub = new Proxy({}, {
+    get: (_t, k) => (k === 'createLinearGradient'
+      ? () => ({ addColorStop() {} })
+      : (...args) => {
+        ops.push(k + ':' + args.map(a => (typeof a === 'number'
+          ? Math.round(a * 100) / 100 : String(a))).join(','));
+      }),
+    set: () => true,
+  });
+  const create = document.createElement;
+  document.createElement = tag => {
+    const node = create(tag);
+    if (String(tag).toLowerCase() === 'canvas') {
+      node.getContext = () => ctxStub;
+      node.getBoundingClientRect = () => ({ left: 0, top: 0, width: 600, height: 200 });
+    }
+    return node;
+  };
+  global.getComputedStyle = () => ({ getPropertyValue: () => '#2f81f7' });
+
+  (0, eval)(read('internal/webui/static/app.js'));
+
+  // ts 为该小时起点，10 月 15 日 08/09/10 点三点，中间那个带失败
+  const mk = (hour, requests, success, failed, pin, pout, lat) => {
+    const d = new Date(2026, 9, 15, hour, 0, 0, 0);
+    return { ts: Math.floor(d.getTime() / 1000), requests, success, failed,
+      prompt_tokens: pin, completion_tokens: pout, total_latency_ms: lat };
+  };
+  const series = [
+    mk(8, 100, 98, 2, 5000, 1200, 32000),
+    mk(9, 200, 190, 10, 9000, 2500, 60000),
+    mk(10, 0, 0, 0, 0, 0, 0),
+  ];
+
+  const host = el('trendReq');
+  host.id = 'trendReq';
+  host.clientWidth = 600;
+  window.renderTrend('trendReq', series, { metric: 'requests' });
+
+  const cv = host.children.find(c => String(c.tagName) === 'CANVAS');
+  assert(!!cv, '趋势图渲染出 canvas');
+  assert(cv.className === 'trend-canvas', 'canvas 带上 trend-canvas 样式类');
+
+  // padL=50 / padR=14 / 宽 600 / 3 点 → x = 50、318、586
+  const tip = h => {
+    const t = h.querySelector('.chart-tip');
+    return { html: t ? t.innerHTML : '', shown: !!(t && t.classList.contains('on')) };
+  };
+  assert(!tip(host).shown, '未悬浮时不显示明细');
+
+  cv.dispatch('mousemove', { clientX: 318 });
+  const t1 = tip(host);
+  assert(t1.shown, '鼠标移到数据点上显示明细');
+  assert(/09:00 – 10:00/.test(t1.html), '明细给出该小时的时间区间');
+  assert(/请求 200 次/.test(t1.html), '明细主指标跟随图表口径（请求次数）');
+  assert(/成功<\/span><b>190</.test(t1.html), '明细含成功数');
+  assert(/tip-err/.test(t1.html) && /失败<\/span><b>10</.test(t1.html), '有失败时失败数标红');
+  assert(/9,000 \/ 2,500/.test(t1.html), '明细含输入 / 输出 token');
+  assert(/300 ms/.test(t1.html), '明细含平均延迟（总延迟 ÷ 请求数）');
+  assert(ops.some(o => o.indexOf('moveTo:318,18') === 0), '悬浮位置画出竖向对齐线');
+
+  // 鼠标不在点上 → 取最近的一个小时
+  cv.dispatch('mousemove', { clientX: 20 });
+  assert(/08:00/.test(tip(host).html), '鼠标不在点上时取最近的一个小时');
+
+  // 移动端没有 mousemove，触屏也要能看
+  cv.dispatch('touchstart', { touches: [{ clientX: 318 }] });
+  assert(/09:00/.test(tip(host).html), '触屏 touchstart 也能查看明细');
+
+  // 空档小时：显示 0 次、延迟为 -，且不标红
+  cv.dispatch('mousemove', { clientX: 586 });
+  const t2 = tip(host);
+  assert(/请求 0 次/.test(t2.html) && /平均延迟<\/span><b>-/.test(t2.html), '空档小时显示 0 次、延迟为 -');
+  assert(t2.html.indexOf('tip-err') === -1, '无失败时不标红');
+
+  cv.dispatch('mouseleave');
+  assert(!tip(host).shown, '鼠标移出趋势图后明细消失');
+
+  // Token 图：主指标换成输入+输出 token
+  const host2 = el('trendToken');
+  host2.id = 'trendToken';
+  host2.clientWidth = 600;
+  window.renderTrend('trendToken', series, { metric: 'tokens' });
+  const cv2 = host2.children.find(c => String(c.tagName) === 'CANVAS');
+  cv2.dispatch('mousemove', { clientX: 318 });
+  assert(/Token 用量 11,500/.test(tip(host2).html), 'Token 图的主指标为输入+输出 token');
+}
+
 /* ------------------------------------------------------------------ */
 (async () => {
   installDom();
@@ -502,6 +600,7 @@ function testChatConns() {
   testStatic();
   testFmt();
   testChatConns();
+  testTrendTip();
   console.log('\n通过 ' + passed + ' 项，失败 ' + failed + ' 项');
   process.exit(failed ? 1 : 0);
 })();

@@ -5,7 +5,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/subtle"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
@@ -20,6 +19,7 @@ import (
 	"github.com/xieyuhua/apitoken/internal/model"
 	"github.com/xieyuhua/apitoken/internal/proxy"
 	"github.com/xieyuhua/apitoken/internal/store"
+	"github.com/xieyuhua/apitoken/internal/util"
 	"github.com/xieyuhua/apitoken/internal/webui"
 )
 
@@ -34,9 +34,16 @@ type Server struct {
 	proxy *proxy.Handler
 	admin *admin.Handler
 
-	// 后台渠道探活循环的停止信号
-	healthStop chan struct{}
-	healthOnce sync.Once
+	// 后台渠道探活循环的生命周期状态。
+	// 之前 healthStop 由 StartHealthMonitor 赋值、StopHealthMonitor 用 sync.Once 关闭：
+	// 若 Stop 先于 Start 被调用，Once 会被消耗掉而此时 channel 还是 nil，
+	// 之后 Start 起来的 goroutine 将永远无法被停止（优雅退出泄漏）。
+	// 这里把三者的状态收在 healthMu 下，让 Stop 先于/后于 Start 都只会关闭一次。
+	healthMu      sync.Mutex
+	healthStartOn sync.Once
+	healthStopOn  sync.Once
+	healthStopped bool
+	healthStop    chan struct{}
 }
 
 // New 构造网关服务。
@@ -67,27 +74,50 @@ func (s *Server) probeInterval() time.Duration {
 // routing.probe_enabled 决定，可在设置页开关。
 // 结果写入渠道健康状态，连续失败会进入冷却（见 admin.Handler.ProbeAllChannels）。
 func (s *Server) StartHealthMonitor() {
-	s.healthStop = make(chan struct{})
-	go func() {
-		s.admin.ProbeAllChannels(context.Background())
-		ticker := time.NewTicker(s.probeInterval())
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				s.admin.ProbeAllChannels(context.Background())
-				// 每轮都按最新配置重置间隔：设置页改了探活频率无需重启即可生效
-				ticker.Reset(s.probeInterval())
-			case <-s.healthStop:
-				return
-			}
+	s.healthStartOn.Do(func() {
+		stop := s.beginHealth()
+		if stop == nil {
+			return // StopHealthMonitor 已先调用，不再启动
 		}
-	}()
+		go func() {
+			s.admin.ProbeAllChannels(context.Background())
+			ticker := time.NewTicker(s.probeInterval())
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					s.admin.ProbeAllChannels(context.Background())
+					// 每轮都按最新配置重置间隔：设置页改了探活频率无需重启即可生效
+					ticker.Reset(s.probeInterval())
+				case <-stop:
+					return
+				}
+			}
+		}()
+	})
 }
 
-// StopHealthMonitor 停止后台探活循环（优雅退出时调用）。
+// beginHealth 在 healthMu 下取探活循环的停止信号。
+// 返回 nil 表示 StopHealthMonitor 已先于 Start 调用，调用方不应再启动协程。
+func (s *Server) beginHealth() chan struct{} {
+	s.healthMu.Lock()
+	defer s.healthMu.Unlock()
+	if s.healthStopped {
+		return nil
+	}
+	if s.healthStop == nil {
+		s.healthStop = make(chan struct{})
+	}
+	return s.healthStop
+}
+
+// StopHealthMonitor 停止后台探活循环（优雅退出时调用）。可重复调用，也不会泄漏
+// 「先 Stop 后 Start」的调用顺序：此后 Start 不再拉起协程。
 func (s *Server) StopHealthMonitor() {
-	s.healthOnce.Do(func() {
+	s.healthStopOn.Do(func() {
+		s.healthMu.Lock()
+		defer s.healthMu.Unlock()
+		s.healthStopped = true
 		if s.healthStop != nil {
 			close(s.healthStop)
 		}
@@ -156,8 +186,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(v)
+	util.WriteJSON(w, http.StatusOK, v)
 }
 
 // clientAuth 校验客户端调用密钥。

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/xieyuhua/apitoken/internal/config"
 	"github.com/xieyuhua/apitoken/internal/model"
 	"github.com/xieyuhua/apitoken/internal/proxy"
 )
@@ -135,171 +136,248 @@ func (h *Handler) diagnosticsRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, report)
 }
 
-// buildChecks 静态配置自检。
+// emit 是某个检查组记录结果的函数：name 为组内的检查项名，group 由注册表指定。
+type emit func(name, level, detail, fix string)
+
+// checkGroup 一组自检项。
+//
+// buildChecks 原来是 165 行、内含闭包 add(...) 的顺序执行：20 多个检查项挤在一起，
+// 新增一项要在函数中间找位置，也没法单独复用「只检查渠道」这类子集合。
+// 改成注册表后每组一个函数，顺序即页面上的展示顺序，新增只需加一行。
+type checkGroup struct {
+	group string
+	fn    func(c *checkCtx, add emit)
+}
+
+func checkGroups() []checkGroup {
+	return []checkGroup{
+		{"config", checkAuth},
+		{"config", checkRouting},
+		{"channel", checkChannels},
+		{"route", checkRoutes},
+		{"storage", checkStorage},
+		{"logging", checkLogging},
+		{"network", checkNetwork},
+	}
+}
+
+// checkCtx 检查所需的输入。一次性算好派生数据，各组只读取不再重复查 store。
+type checkCtx struct {
+	h       *Handler
+	cfg     *config.Config
+	rt      *config.Runtime
+	all     []model.Channel
+	enabled []model.Channel
+	routes  []model.Route
+}
+
+// buildChecks 静态配置自检：按注册表顺序产出全部检查项。
 func (h *Handler) buildChecks() []Check {
-	cfg := h.cfg
-	rt := cfg.RT()
+	c := &checkCtx{
+		h:       h,
+		cfg:     h.cfg,
+		rt:      h.cfg.RT(),
+		all:     h.store.ListChannels(),
+		routes:  h.store.ListRoutes(),
+		enabled: h.enabledChannels(),
+	}
 	var out []Check
-	add := func(group, name, level, detail, fix string) {
-		out = append(out, Check{Group: group, Name: name, Level: level, Detail: detail, Fix: fix})
+	for _, g := range checkGroups() {
+		g := g
+		g.fn(c, func(name, level, detail, fix string) {
+			out = append(out, Check{Group: g.group, Name: name, Level: level, Detail: detail, Fix: fix})
+		})
 	}
+	return out
+}
 
-	// 鉴权
-	if len(rt.ClientKeys) == 0 {
-		add("config", "客户端密钥", LevelWarn, "未配置 client_keys，知道地址即可调用网关", "在 config.yaml 的 security.client_keys 中配置至少一个密钥")
+// checkAuth 客户端密钥与管理令牌是否有配置。
+func checkAuth(c *checkCtx, add emit) {
+	if len(c.rt.ClientKeys) == 0 {
+		add("客户端密钥", LevelWarn, "未配置 client_keys，知道地址即可调用网关", "在 config.yaml 的 security.client_keys 中配置至少一个密钥")
 	} else {
-		add("config", "客户端密钥", LevelPass, fmt.Sprintf("已配置 %d 个", len(rt.ClientKeys)), "")
+		add("客户端密钥", LevelPass, fmt.Sprintf("已配置 %d 个", len(c.rt.ClientKeys)), "")
 	}
-	if rt.AdminToken == "" {
-		add("config", "管理令牌", LevelWarn, "未配置 admin_token，管理接口无鉴权", "配置 security.admin_token 保护 /admin/*")
+	if c.rt.AdminToken == "" {
+		add("管理令牌", LevelWarn, "未配置 admin_token，管理接口无鉴权", "配置 security.admin_token 保护 /admin/*")
 	} else {
-		add("config", "管理令牌", LevelPass, "已配置", "")
+		add("管理令牌", LevelPass, "已配置", "")
 	}
+}
 
-	// 路由策略
-	switch rt.Strategy {
-	case "priority_round_robin", "round_robin", "failover", "random":
-		add("config", "路由策略", LevelPass, rt.Strategy, "")
-	default:
-		add("config", "路由策略", LevelFail, "未知策略 "+rt.Strategy, "可选：priority_round_robin / round_robin / failover / random")
-	}
-	if rt.MaxAttempts <= 1 {
-		add("config", "故障转移", LevelWarn, "max_attempts=1，渠道失败不会切换到下一个", "建议设为 2~3")
+// checkRouting 路由策略、故障转移与重试状态码。
+func checkRouting(c *checkCtx, add emit) {
+	if config.IsValidStrategy(c.rt.Strategy) {
+		add("路由策略", LevelPass, c.rt.Strategy, "")
 	} else {
-		add("config", "故障转移", LevelPass, fmt.Sprintf("最多尝试 %d 个渠道", rt.MaxAttempts), "")
+		add("路由策略", LevelFail, "未知策略 "+c.rt.Strategy, "可选："+strings.Join(config.Strategies, " / "))
+	}
+	if c.rt.MaxAttempts <= 1 {
+		add("故障转移", LevelWarn, "max_attempts=1，渠道失败不会切换到下一个", "建议设为 2~3")
+	} else {
+		add("故障转移", LevelPass, fmt.Sprintf("最多尝试 %d 个渠道", c.rt.MaxAttempts), "")
 	}
 	has5xx := false
-	for _, s := range rt.RetryStatus {
+	for _, s := range c.rt.RetryStatus {
 		if s >= 500 {
 			has5xx = true
 		}
 	}
 	if !has5xx {
-		add("config", "重试状态码", LevelWarn, "未包含任何 5xx，上游 5xx 不会触发切换", "在 routing.retry_status 中加入 500/502/503/504")
+		add("重试状态码", LevelWarn, "未包含任何 5xx，上游 5xx 不会触发切换", "在 routing.retry_status 中加入 500/502/503/504")
 	} else {
-		add("config", "重试状态码", LevelPass, fmt.Sprintf("%v", rt.RetryStatus), "")
+		add("重试状态码", LevelPass, fmt.Sprintf("%v", c.rt.RetryStatus), "")
 	}
+}
 
-	// 渠道
-	all := h.store.ListChannels()
-	enabled := h.enabledChannels()
-	if len(all) == 0 {
-		add("channel", "渠道数量", LevelFail, "尚未添加任何渠道", "在控制台添加渠道或写入 config.yaml 的 channels")
-	} else if len(enabled) == 0 {
-		add("channel", "渠道数量", LevelFail, fmt.Sprintf("共 %d 个渠道但全部停用", len(all)), "启用至少一个渠道")
-	} else {
-		add("channel", "渠道数量", LevelPass, fmt.Sprintf("启用 %d / 共 %d", len(enabled), len(all)), "")
-	}
+// channelCounts 单个渠道配置的常见问题计数。
+type channelCounts struct {
+	noKey, noModel, wildcard, badURL int
+}
 
-	noKey, noModel, wildcard, badURL := 0, 0, 0, 0
-	for _, c := range enabled {
+func countChannelIssues(list []model.Channel) channelCounts {
+	var n channelCounts
+	for _, c := range list {
 		if c.APIKey == "" {
-			noKey++
+			n.noKey++
 		}
 		if len(c.Models) == 0 {
-			noModel++
+			n.noModel++
 		}
 		for _, m := range c.Models {
 			if m == "*" {
-				wildcard++
+				n.wildcard++
 			}
 		}
 		if !strings.HasPrefix(c.BaseURL, "http://") && !strings.HasPrefix(c.BaseURL, "https://") {
-			badURL++
+			n.badURL++
 		}
 	}
-	if noKey > 0 {
-		add("channel", "API Key", LevelFail, fmt.Sprintf("%d 个启用渠道未填 api_key", noKey), "补齐渠道密钥，否则上游会返回 401")
-	} else {
-		add("channel", "API Key", LevelPass, "全部启用渠道均已配置", "")
-	}
-	if badURL > 0 {
-		add("channel", "Base URL 格式", LevelFail, fmt.Sprintf("%d 个渠道的 base_url 不以 http(s) 开头", badURL), "应形如 https://api.example.com/v1")
-	} else {
-		add("channel", "Base URL 格式", LevelPass, "格式正确", "")
-	}
-	if noModel > 0 {
-		add("channel", "模型范围", LevelWarn, fmt.Sprintf("%d 个渠道未限定模型，等于放通全部模型名", noModel), "在渠道里列出实际支持的模型名，避免误路由")
-	} else {
-		add("channel", "模型范围", LevelPass, "均已限定模型", "")
-	}
-	if wildcard > 0 {
-		add("channel", "通配模型", LevelWarn, "存在 * 通配配置，会接收任意模型名", "移除 * 并显式列出模型")
+	return n
+}
+
+// checkChannels 渠道数量与渠道配置的完整性。
+func checkChannels(c *checkCtx, add emit) {
+	switch {
+	case len(c.all) == 0:
+		add("渠道数量", LevelFail, "尚未添加任何渠道", "在控制台添加渠道或写入 config.yaml 的 channels")
+	case len(c.enabled) == 0:
+		add("渠道数量", LevelFail, fmt.Sprintf("共 %d 个渠道但全部停用", len(c.all)), "启用至少一个渠道")
+	default:
+		add("渠道数量", LevelPass, fmt.Sprintf("启用 %d / 共 %d", len(c.enabled), len(c.all)), "")
 	}
 
-	// 路由引用
-	routes := h.store.ListRoutes()
+	n := countChannelIssues(c.enabled)
+	if n.noKey > 0 {
+		add("API Key", LevelFail, fmt.Sprintf("%d 个启用渠道未填 api_key", n.noKey), "补齐渠道密钥，否则上游会返回 401")
+	} else {
+		add("API Key", LevelPass, "全部启用渠道均已配置", "")
+	}
+	if n.badURL > 0 {
+		add("Base URL 格式", LevelFail, fmt.Sprintf("%d 个渠道的 base_url 不以 http(s) 开头", n.badURL), "应形如 https://api.example.com/v1")
+	} else {
+		add("Base URL 格式", LevelPass, "格式正确", "")
+	}
+	if n.noModel > 0 {
+		add("模型范围", LevelWarn, fmt.Sprintf("%d 个渠道未限定模型，等于放通全部模型名", n.noModel), "在渠道里列出实际支持的模型名，避免误路由")
+	} else {
+		add("模型范围", LevelPass, "均已限定模型", "")
+	}
+	if n.wildcard > 0 {
+		add("通配模型", LevelWarn, "存在 * 通配配置，会接收任意模型名", "移除 * 并显式列出模型")
+	}
+}
+
+// checkRoutes 显式路由的渠道引用与重复定义。
+func checkRoutes(c *checkCtx, add emit) {
 	ids := map[string]bool{}
-	for _, c := range all {
-		ids[c.ID] = true
+	for _, ch := range c.all {
+		ids[ch.ID] = true
 	}
 	missing, dup := 0, 0
 	seenModel := map[string]bool{}
-	for _, rt := range routes {
-		if seenModel[rt.Model] {
+	for _, r := range c.routes {
+		if seenModel[r.Model] {
 			dup++
 		}
-		seenModel[rt.Model] = true
-		if len(rt.Channels) == 0 {
-			add("route", "路由 "+rt.Model, LevelWarn, "未绑定任何渠道", "为该路由选择至少一个渠道，或删除它")
+		seenModel[r.Model] = true
+		if len(r.Channels) == 0 {
+			add("路由 "+r.Model, LevelWarn, "未绑定任何渠道", "为该路由选择至少一个渠道，或删除它")
 		}
-		for _, cid := range rt.Channels {
+		for _, cid := range r.Channels {
 			if !ids[cid] {
 				missing++
 			}
 		}
 	}
 	if missing > 0 {
-		add("route", "路由引用", LevelFail, fmt.Sprintf("%d 处路由引用了不存在的渠道", missing), "检查路由里的渠道 ID 是否拼写正确")
+		add("路由引用", LevelFail, fmt.Sprintf("%d 处路由引用了不存在的渠道", missing), "检查路由里的渠道 ID 是否拼写正确")
 	} else {
-		add("route", "路由引用", LevelPass, fmt.Sprintf("%d 条路由引用均有效", len(routes)), "")
+		add("路由引用", LevelPass, fmt.Sprintf("%d 条路由引用均有效", len(c.routes)), "")
 	}
 	if dup > 0 {
-		add("route", "路由重复", LevelWarn, fmt.Sprintf("%d 个模型被重复定义", dup), "同名路由以最后一条为准")
+		add("路由重复", LevelWarn, fmt.Sprintf("%d 个模型被重复定义", dup), "同名路由以最后一条为准")
 	}
-	if len(routes) == 0 {
-		add("route", "显式路由", LevelSkip, "未配置，全部按渠道 models 自动路由", "")
+	if len(c.routes) == 0 {
+		add("显式路由", LevelSkip, "未配置，全部按渠道 models 自动路由", "")
 	}
+}
 
-	// 数据与日志
-	dir := filepath.Dir(cfg.DataFile())
+// checkStorage 数据目录可写性与渠道持久化文件。
+func checkStorage(c *checkCtx, add emit) {
+	dir := filepath.Dir(c.cfg.DataFile())
 	probe := filepath.Join(dir, ".write-test")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		add("storage", "数据目录", LevelFail, dir+" 不可创建: "+err.Error(), "检查目录权限或 data_dir 配置")
+		add("数据目录", LevelFail, dir+" 不可创建: "+err.Error(), "检查目录权限或 data_dir 配置")
 	} else if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
-		add("storage", "数据目录", LevelFail, dir+" 不可写: "+err.Error(), "检查目录权限")
+		add("数据目录", LevelFail, dir+" 不可写: "+err.Error(), "检查目录权限")
 	} else {
 		_ = os.Remove(probe)
-		add("storage", "数据目录", LevelPass, dir+" 可写", "")
+		add("数据目录", LevelPass, dir+" 可写", "")
 	}
-	if fi, err := os.Stat(cfg.DataFile()); err == nil {
-		add("storage", "渠道持久化", LevelPass, fmt.Sprintf("%s（%d 字节）", cfg.DataFile(), fi.Size()), "")
+	if fi, err := os.Stat(c.cfg.DataFile()); err == nil {
+		add("渠道持久化", LevelPass, fmt.Sprintf("%s（%d 字节）", c.cfg.DataFile(), fi.Size()), "")
 	} else {
-		add("storage", "渠道持久化", LevelWarn, "尚无 data/gateway.json，将在首次变更时生成", "")
+		add("渠道持久化", LevelWarn, "尚无 data/gateway.json，将在首次变更时生成", "")
 	}
-	if rt.KeepLogs < 100 {
-		add("logging", "日志容量", LevelWarn, fmt.Sprintf("keep_logs=%d 偏小", rt.KeepLogs), "建议 500~2000")
-	} else {
-		add("logging", "日志容量", LevelPass, fmt.Sprintf("内存保留 %d 条调用日志", rt.KeepLogs), "")
-	}
-	if !rt.AccessLog {
-		add("logging", "访问日志", LevelWarn, "access_log=false，控制台不输出访问日志", "排查问题时建议开启")
-	}
-	if rt.RecordPayload {
-		add("logging", "载荷记录", LevelWarn, "record_payload=true，日志会记录请求/响应内容（可能含敏感信息）", "生产环境建议关闭")
-	}
+}
 
-	// 网络
+// checkLogging 日志容量、开关与落盘管线健康度。
+func checkLogging(c *checkCtx, add emit) {
+	if c.rt.KeepLogs < minRecommendedKeepLogs {
+		add("日志容量", LevelWarn, fmt.Sprintf("keep_logs=%d 偏小", c.rt.KeepLogs), "建议 500~2000")
+	} else {
+		add("日志容量", LevelPass, fmt.Sprintf("内存保留 %d 条调用日志", c.rt.KeepLogs), "")
+	}
+	if !c.rt.AccessLog {
+		add("访问日志", LevelWarn, "access_log=false，控制台不输出访问日志", "排查问题时建议开启")
+	}
+	if c.rt.RecordPayload {
+		add("载荷记录", LevelWarn, "record_payload=true，日志会记录请求/响应内容（可能含敏感信息）", "生产环境建议关闭")
+	}
+	// 落盘队列满是静默丢弃的：这里把它上升为可见的自检项，
+	// 否则用户只能从「日志缺了」反推，很难定位到磁盘 IO 跟不上。
+	if dropped, written := c.h.store.LogSinkStats(); dropped > 0 {
+		add("日志落盘", LevelWarn,
+			fmt.Sprintf("因队列已满累计丢弃 %d 条（已落盘 %d 条）", dropped, written),
+			"磁盘写入跟不上日志量：检查日志目录所在磁盘，或降低 record_payload / payload_limit")
+	}
+}
+
+// checkNetwork 出网代理与流式超时。
+func checkNetwork(c *checkCtx, add emit) {
 	proxyMode := "跟随环境变量 HTTP_PROXY/HTTPS_PROXY"
-	if p := strings.TrimSpace(rt.ProxyURL); p != "" {
+	if p := strings.TrimSpace(c.rt.ProxyURL); p != "" {
 		proxyMode = "proxy_url = " + p
 	}
-	add("network", "出网代理", LevelPass, proxyMode, "")
-	if rt.StreamTimeout <= 0 {
-		add("network", "流式超时", LevelWarn, "stream_timeout 未配置", "建议 300s 以上")
+	add("出网代理", LevelPass, proxyMode, "")
+	if c.rt.StreamTimeout <= 0 {
+		add("流式超时", LevelWarn, "stream_timeout 未配置", "建议 300s 以上")
 	}
-	return out
 }
+
+// minRecommendedKeepLogs keep_logs 的推荐下限，低于此值日志页面基本查不到东西。
+const minRecommendedKeepLogs = 100
 
 func (h *Handler) enabledChannels() []model.Channel {
 	var out []model.Channel

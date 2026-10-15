@@ -3,6 +3,8 @@ package translate
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/xieyuhua/apitoken/internal/util"
 )
 
 // openAIChunk OpenAI 流式响应的一个 SSE 数据块（只取需要的字段）。
@@ -122,7 +124,7 @@ func (s *Stream) Line(payload string, done bool) []byte {
 	d := ch.Choices[0].Delta
 
 	// 思维链优先（Anthropic 协议要求 thinking 块排在正文之前）
-	if rc := firstNonEmpty(d.ReasoningContent, d.Reasoning); rc != "" {
+	if rc := util.FirstNonEmpty(d.ReasoningContent, d.Reasoning); rc != "" {
 		if s.info.WantThinking {
 			out.Write(s.blockDelta(blockThinking, "thinking_delta", "thinking", rc))
 		} else {
@@ -256,13 +258,4 @@ func (s *Stream) event(name string, data map[string]any) string {
 		return ""
 	}
 	return "event: " + name + "\ndata: " + string(b) + "\n\n"
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

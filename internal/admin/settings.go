@@ -1,12 +1,15 @@
 package admin
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/xieyuhua/apitoken/internal/config"
 	"github.com/xieyuhua/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/util"
 )
 
 // SettingsView 设置页可读写的配置（仅限可热更新项）。
@@ -67,28 +70,26 @@ func viewFromRuntime(rt *config.Runtime, level string) SettingsView {
 	return SettingsView{
 		ClientKeys:           append([]string(nil), rt.ClientKeys...),
 		AdminToken:           rt.AdminToken,
-		TrustProxyHeaders:    boolPtr(rt.TrustProxyHeaders),
+		TrustProxyHeaders:    util.BoolPtr(rt.TrustProxyHeaders),
 		Strategy:             rt.Strategy,
 		MaxAttempts:          rt.MaxAttempts,
-		ForceStreamUsage:     boolPtr(rt.ForceStreamUsage),
+		ForceStreamUsage:     util.BoolPtr(rt.ForceStreamUsage),
 		RetryStatus:          append([]int(nil), rt.RetryStatus...),
 		CooldownSeconds:      &cd,
-		ProbeEnabled:         boolPtr(rt.ProbeEnabled),
+		ProbeEnabled:         util.BoolPtr(rt.ProbeEnabled),
 		ProbeIntervalSeconds: &iv,
 		ProbeFailThreshold:   rt.ProbeFailThreshold,
-		AccessLog:            boolPtr(rt.AccessLog),
+		AccessLog:            util.BoolPtr(rt.AccessLog),
 		KeepLogs:             rt.KeepLogs,
-		RecordPayload:        boolPtr(rt.RecordPayload),
+		RecordPayload:        util.BoolPtr(rt.RecordPayload),
 		PayloadLimit:         rt.PayloadLimit,
-		LogArchive:           boolPtr(rt.LogArchive),
+		LogArchive:           util.BoolPtr(rt.LogArchive),
 		LogLevel:             level,
 		RequestTimeout:       int(rt.RequestTimeout / time.Second),
 		StreamTimeout:        int(rt.StreamTimeout / time.Second),
 		Theme:                rt.Theme,
 	}
 }
-
-func boolPtr(b bool) *bool { return &b }
 
 // getSettings GET /admin/settings（?reveal=1 返回密钥明文）
 func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
@@ -120,18 +121,40 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// updateSettings POST /admin/settings —— 保存并立即生效。
-func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
-	var in SettingsView
-	if err := decodeJSON(r, &in); err != nil {
-		writeErr(w, http.StatusBadRequest, "解析失败: "+err.Error())
-		return
-	}
+// 各项取值的合法区间。集中在这里，避免在校验代码里散落不可解释的数字。
+const (
+	minMaxAttempts      = 1
+	maxCooldownSeconds  = 3600
+	minProbeSeconds     = 10
+	maxProbeSeconds     = 3600
+	minProbeFailCount   = 1
+	maxProbeFailCount   = 20
+	minKeepLogsCount    = 10
+	minPayloadLimitSize = 100
+	maxPayloadLimitSize = 200000
+)
 
-	old := h.cfg.RT()
-	next := old.Clone()
+// settingsApplier 一组相关字段的「校验 + 赋值」：校验失败返回 error（调用方统一回 400），
+// 成功则把结果写进 next。
+//
+// updateSettings 此前把六组字段的校验串在一个近 200 行、含 7 处提前返回的函数里，
+// 加一项要在长函数里找位置不说，也没法单独验证某一组规则。拆成 appliers 之后
+// 每组规则各自成立，能单独写测试。
+type settingsApplier func(in SettingsView, next *config.Runtime) error
 
-	// 鉴权：空字符串表示不修改（避免页面回显掩码时把密钥清空）
+// settingsAppliers 按顺序执行，任一失败即中止（语义与原实现一致）。
+var settingsAppliers = []settingsApplier{
+	applyAuthSettings,
+	applyRoutingSettings,
+	applyProbeSettings,
+	applyLogSettings,
+	applyTimeoutSettings,
+	applyThemeSettings,
+}
+
+// applyAuthSettings 网关密钥、管理令牌与来源 IP 解析方式。
+func applyAuthSettings(in SettingsView, next *config.Runtime) error {
+	// 空字符串表示不修改（避免页面回显掩码时把密钥清空）
 	if in.ClientKeys != nil {
 		keys := make([]string, 0, len(in.ClientKeys))
 		for _, k := range in.ClientKeys {
@@ -144,31 +167,29 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		if len(keys) > 0 {
 			next.ClientKeys = keys
 		} else if len(in.ClientKeys) > 0 {
-			writeErr(w, http.StatusBadRequest, "至少需要保留一个网关密钥（全部填 * 会被忽略）")
-			return
+			return errors.New("至少需要保留一个网关密钥（全部填 * 会被忽略）")
 		}
 	}
-	if strings.TrimSpace(in.AdminToken) != "" && !strings.Contains(in.AdminToken, "*") {
-		next.AdminToken = strings.TrimSpace(in.AdminToken)
+	if token := strings.TrimSpace(in.AdminToken); token != "" && !strings.Contains(token, "*") {
+		next.AdminToken = token
 	}
 	if in.TrustProxyHeaders != nil {
 		next.TrustProxyHeaders = *in.TrustProxyHeaders
 	}
+	return nil
+}
 
-	// 路由（留空表示不修改）
+// applyRoutingSettings 路由策略、重试与渠道冷却。
+func applyRoutingSettings(in SettingsView, next *config.Runtime) error {
 	if in.Strategy != "" {
-		switch in.Strategy {
-		case "priority_round_robin", "round_robin", "failover", "random":
-			next.Strategy = in.Strategy
-		default:
-			writeErr(w, http.StatusBadRequest, "未知路由策略: "+in.Strategy)
-			return
+		if !config.IsValidStrategy(in.Strategy) {
+			return fmt.Errorf("未知路由策略: %s（可选：%s）", in.Strategy, strings.Join(config.Strategies, " / "))
 		}
+		next.Strategy = in.Strategy
 	}
 	if in.MaxAttempts != 0 {
-		if in.MaxAttempts < 1 {
-			writeErr(w, http.StatusBadRequest, "max_attempts 至少为 1")
-			return
+		if in.MaxAttempts < minMaxAttempts {
+			return fmt.Errorf("max_attempts 至少为 %d", minMaxAttempts)
 		}
 		next.MaxAttempts = in.MaxAttempts
 	}
@@ -182,52 +203,51 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	if in.CooldownSeconds != nil {
 		cd := *in.CooldownSeconds
 		if cd < 0 {
-			writeErr(w, http.StatusBadRequest, "cooldown_seconds 不能为负，0 表示关闭冷却")
-			return
+			return errors.New("cooldown_seconds 不能为负，0 表示关闭冷却")
 		}
-		if cd > 3600 {
-			writeErr(w, http.StatusBadRequest, "cooldown_seconds 最多 3600（1 小时）")
-			return
+		if cd > maxCooldownSeconds {
+			return fmt.Errorf("cooldown_seconds 最多 %d（1 小时）", maxCooldownSeconds)
 		}
 		next.Cooldown = time.Duration(cd) * time.Second
 	}
+	return nil
+}
 
-	// 渠道后台探活
+// applyProbeSettings 渠道后台自动探活三项。
+func applyProbeSettings(in SettingsView, next *config.Runtime) error {
 	if in.ProbeEnabled != nil {
 		next.ProbeEnabled = *in.ProbeEnabled
 	}
 	if in.ProbeIntervalSeconds != nil {
 		sec := *in.ProbeIntervalSeconds
-		if sec < 10 {
-			writeErr(w, http.StatusBadRequest, "probe_interval_seconds 至少为 10（避免频繁打扰上游）")
-			return
+		if sec < minProbeSeconds {
+			return fmt.Errorf("probe_interval_seconds 至少为 %d（避免频繁打扰上游）", minProbeSeconds)
 		}
-		if sec > 3600 {
-			writeErr(w, http.StatusBadRequest, "probe_interval_seconds 最多 3600（1 小时）")
-			return
+		if sec > maxProbeSeconds {
+			return fmt.Errorf("probe_interval_seconds 最多 %d（1 小时）", maxProbeSeconds)
 		}
 		next.ProbeInterval = time.Duration(sec) * time.Second
 	}
 	if in.ProbeFailThreshold != 0 {
-		if in.ProbeFailThreshold < 1 {
-			writeErr(w, http.StatusBadRequest, "probe_fail_threshold 至少为 1")
-			return
+		if in.ProbeFailThreshold < minProbeFailCount {
+			return fmt.Errorf("probe_fail_threshold 至少为 %d", minProbeFailCount)
 		}
-		if in.ProbeFailThreshold > 20 {
-			writeErr(w, http.StatusBadRequest, "probe_fail_threshold 最多 20（阈值过大会让故障渠道迟迟不被剔除）")
-			return
+		if in.ProbeFailThreshold > maxProbeFailCount {
+			return fmt.Errorf("probe_fail_threshold 最多 %d（阈值过大会让故障渠道迟迟不被剔除）", maxProbeFailCount)
 		}
 		next.ProbeFailThreshold = in.ProbeFailThreshold
 	}
+	return nil
+}
 
-	// 日志
+// applyLogSettings 访问日志的开关、容量与是否记录载荷。
+func applyLogSettings(in SettingsView, next *config.Runtime) error {
 	if in.AccessLog != nil {
 		next.AccessLog = *in.AccessLog
 	}
 	if in.KeepLogs != 0 {
-		if in.KeepLogs < 10 {
-			writeErr(w, http.StatusBadRequest, "keep_logs 至少为 10")
-			return
+		if in.KeepLogs < minKeepLogsCount {
+			return fmt.Errorf("keep_logs 至少为 %d", minKeepLogsCount)
 		}
 		next.KeepLogs = in.KeepLogs
 	}
@@ -235,36 +255,58 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		next.RecordPayload = *in.RecordPayload
 	}
 	if in.PayloadLimit != 0 {
-		if in.PayloadLimit < 100 {
-			writeErr(w, http.StatusBadRequest, "payload_limit 至少为 100")
-			return
+		if in.PayloadLimit < minPayloadLimitSize {
+			return fmt.Errorf("payload_limit 至少为 %d", minPayloadLimitSize)
 		}
-		if in.PayloadLimit > 200000 {
-			writeErr(w, http.StatusBadRequest, "payload_limit 最多为 200000（避免日志体积过大）")
-			return
+		if in.PayloadLimit > maxPayloadLimitSize {
+			return fmt.Errorf("payload_limit 最多为 %d（避免日志体积过大）", maxPayloadLimitSize)
 		}
 		next.PayloadLimit = in.PayloadLimit
 	}
 	if in.LogArchive != nil {
 		next.LogArchive = *in.LogArchive
 	}
+	return nil
+}
 
-	// 超时
+// applyTimeoutSettings 请求与流式超时（秒）。
+func applyTimeoutSettings(in SettingsView, next *config.Runtime) error {
 	if in.RequestTimeout >= 1 {
 		next.RequestTimeout = time.Duration(in.RequestTimeout) * time.Second
 	}
 	if in.StreamTimeout >= 1 {
 		next.StreamTimeout = time.Duration(in.StreamTimeout) * time.Second
 	}
+	return nil
+}
 
-	// 界面主题
-	switch in.Theme {
-	case "":
-	case "auto", "dark", "light":
-		next.Theme = in.Theme
-	default:
-		writeErr(w, http.StatusBadRequest, "主题仅支持 auto / dark / light")
+// applyThemeSettings 界面主题。空值表示不修改。
+func applyThemeSettings(in SettingsView, next *config.Runtime) error {
+	if in.Theme == "" {
+		return nil
+	}
+	if !config.IsValidTheme(in.Theme) {
+		return fmt.Errorf("主题仅支持 %s", strings.Join([]string{config.ThemeAuto, config.ThemeDark, config.ThemeLight}, " / "))
+	}
+	next.Theme = in.Theme
+	return nil
+}
+
+// updateSettings POST /admin/settings —— 保存并立即生效。
+func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
+	var in SettingsView
+	if err := decodeJSON(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, "解析失败: "+err.Error())
 		return
+	}
+
+	old := h.cfg.RT()
+	next := old.Clone()
+	for _, apply := range settingsAppliers {
+		if err := apply(in, next); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	// 应用：内存立即生效 + 落盘

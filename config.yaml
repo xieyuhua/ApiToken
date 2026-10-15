@@ -13,6 +13,8 @@ security:
   # 是否信任反向代理头（X-Forwarded-For / X-Real-IP）作为来源 IP（默认 true）。
   # 网关直接暴露公网时建议设为 false，避免客户端伪造来源 IP。
   # trust_proxy_headers: true
+
+  trust_proxy_headers: true
 routing:
   strategy: priority_round_robin
   max_attempts: 3
@@ -29,6 +31,9 @@ routing:
     - 504
     - 529
   cooldown: 1m0s
+  probe_enabled: true
+  probe_interval: 1m0s
+  probe_fail_threshold: 3
 logging:
   level: info
   access_log: true
@@ -39,8 +44,9 @@ logging:
   # 关闭后日志只进内存，重启即清空。
   file_enabled: true
   file_dir: ""
-  file_max_mb: 0
-  file_keep: 0
+  file_max_mb: 64
+  file_keep: 7
+  log_archive: true
 upstream:
   default_timeout: 2m0s
   connect_timeout: 10s

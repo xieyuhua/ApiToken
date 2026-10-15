@@ -19,6 +19,7 @@ import (
 
 	"github.com/xieyuhua/apitoken/internal/config"
 	"github.com/xieyuhua/apitoken/internal/model"
+	"github.com/xieyuhua/apitoken/internal/util"
 )
 
 // Client 上游 HTTP 客户端。
@@ -401,19 +402,5 @@ func NewRequestID() string {
 
 // WriteError 输出 OpenAI 风格错误。
 func WriteError(w http.ResponseWriter, status int, code, message, typ string) {
-	if typ == "" {
-		typ = "invalid_request_error"
-	}
-	if status == 401 || status == 403 {
-		typ = "authentication_error"
-	} else if status == 404 {
-		typ = "not_found_error"
-	} else if status >= 500 {
-		typ = "api_error"
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]any{"message": message, "type": typ, "code": code},
-	})
+	util.WriteError(w, status, code, message, typ)
 }

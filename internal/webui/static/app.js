@@ -355,11 +355,11 @@ function hexToRgba(hex, a) {
   return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
 }
 
-/* ===== 趋势图（按小时的时间序列折线图） ===== */
+/* ===== 趋势图（按小时的时间序列折线图，支持鼠标/触屏悬浮查看明细） ===== */
 const _trendCharts = {};
 
 // renderTrend 渲染最近若干小时的趋势（X 轴为时间）。
-// series: [{ts, requests, success, failed, prompt_tokens, completion_tokens}]
+// series: [{ts, requests, success, failed, prompt_tokens, completion_tokens, total_latency_ms}]
 // opts.metric: 'requests'（默认，请求次数）| 'tokens'（输入+输出 token）
 function renderTrend(elId, series, opts = {}) {
   const el = $(elId);
@@ -369,26 +369,38 @@ function renderTrend(elId, series, opts = {}) {
     delete _trendCharts[elId];
     return;
   }
-  _trendCharts[elId] = { series, opts };
   drawTrend(el, series, opts);
 }
 
-function drawTrend(el, series, opts) {
-  const val = i => opts.metric === 'tokens'
+// trendVal 取出某个小时在 opts.metric 维度上的数值。
+function trendVal(opts) {
+  return i => opts.metric === 'tokens'
     ? (i.prompt_tokens || 0) + (i.completion_tokens || 0)
     : (i.requests || 0);
+}
+
+function drawTrend(el, series, opts) {
+  const rec = _trendCharts[el.id] || {};
+  rec.el = el; rec.series = series; rec.opts = opts;
+  _trendCharts[el.id] = rec;
+
+  const val = trendVal(opts);
   const max = Math.max(...series.map(val), 1);
   const n = series.length;
 
-  let cv = el.querySelector('canvas');
+  // 复用已有 canvas：避免每次重绘都清空容器，把悬浮明细浮层一起重建掉
+  let cv = (rec.cv && el.contains && el.contains(rec.cv)) ? rec.cv : el.querySelector('canvas');
   if (!cv) { cv = document.createElement('canvas'); el.innerHTML = ''; el.appendChild(cv); }
+  rec.cv = cv;
+  cv.className = 'trend-canvas';
   const dpr = window.devicePixelRatio || 1;
-  const w = Math.max(el.clientWidth, 240);
+  const w = Math.max(Number(el.clientWidth) || 0, 240);
   const h = 200;
   cv.width = Math.round(w * dpr);
   cv.height = Math.round(h * dpr);
   cv.style.width = w + 'px';
   cv.style.height = h + 'px';
+  if (el.style) el.style.position = 'relative'; // 明细浮层的定位基准
   const ctx = cv.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
@@ -398,6 +410,7 @@ function drawTrend(el, series, opts) {
   const muted = cs.getPropertyValue('--muted').trim();
   const err = cs.getPropertyValue('--err').trim();
   const border = cs.getPropertyValue('--border').trim();
+  const panel = cs.getPropertyValue('--panel').trim();
 
   const padL = 50, padR = 14, padT = 18, padB = 26;
   const iw = w - padL - padR, ih = h - padT - padB;
@@ -476,6 +489,138 @@ function drawTrend(el, series, opts) {
     ctx.fillStyle = muted;
     ctx.fillText(String(d.getHours()).padStart(2, '0') + ':00', p.x, h - 8);
   });
+
+  // 悬浮态：竖向对齐线 + 高亮点（画在最上层，避免被面积填充盖住）
+  const hovered = rec.hoverIdx != null ? pts[rec.hoverIdx] : null;
+  if (hovered) {
+    ctx.beginPath();
+    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 1;
+    ctx.moveTo(hovered.x, padT);
+    ctx.lineTo(hovered.x, padT + ih);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(hovered.x, hovered.y, 4.5, 0, Math.PI * 2);
+    ctx.fillStyle = primary;
+    ctx.fill();
+    ctx.strokeStyle = panel; // 描一圈底色，浅色/深色主题下都能看清
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+
+  // 记录几何信息用于命中判定，并绑定一次悬浮交互
+  rec.geo = { pts, w, h, padL, padT, iw, ih };
+  bindTrendHover(cv, el);
+  if (hovered) showTrendTip(rec, rec.hoverIdx); else hideTrendTip(rec);
+}
+
+// ---------------------------------------------------------------------------
+// 悬浮明细：鼠标（或触屏）移动到某个小时上，显示该小时的完整数据
+// ---------------------------------------------------------------------------
+
+// bindTrendHover 在每个 canvas 上只绑一次：移动选最近的小时，移出则清除。
+function bindTrendHover(cv, el) {
+  if (!cv.addEventListener || cv.dataset.trendBound) return;
+  cv.dataset.trendBound = '1';
+  if (cv.style) cv.style.cursor = 'crosshair';
+
+  const move = ev => {
+    const rec = _trendCharts[el.id];
+    if (!rec || !rec.geo) return;
+    const src = (ev.touches && ev.touches[0]) || ev;
+    const rect = cv.getBoundingClientRect ? cv.getBoundingClientRect() : { left: 0 };
+    // canvas 的 CSS 尺寸与绘图坐标系一致（dpr 已在 ctx 里缩放），可直接相减
+    setTrendHover(el.id, (src.clientX || 0) - (rect.left || 0));
+  };
+  const leave = () => setTrendHover(el.id, null);
+
+  cv.addEventListener('mousemove', move);
+  cv.addEventListener('mouseleave', leave);
+  cv.addEventListener('touchstart', move); // 移动端没有 mousemove
+  cv.addEventListener('touchmove', move);
+  cv.addEventListener('touchend', leave);
+}
+
+// setTrendHover 更新悬浮下标（传 null 表示指针离开），必要时重绘并刷新明细浮层。
+function setTrendHover(id, x) {
+  const rec = _trendCharts[id];
+  if (!rec || !rec.geo || !rec.geo.pts.length) return;
+
+  let idx = null;
+  if (x != null) {
+    let best = Infinity;
+    rec.geo.pts.forEach((p, k) => {
+      const d = Math.abs(p.x - x);
+      if (d < best) { best = d; idx = k; }
+    });
+  }
+  if (idx !== rec.hoverIdx) {
+    rec.hoverIdx = idx;
+    drawTrend(rec.el, rec.series, rec.opts); // 重绘会顺带刷新浮层
+    return;
+  }
+  if (idx == null) hideTrendTip(rec); else showTrendTip(rec, idx);
+}
+
+// ensureTrendTip 惰性创建明细浮层（放在图表容器内，随容器一起参与布局）。
+function ensureTrendTip(rec) {
+  let tip = rec.tip;
+  if (!tip || (rec.el.contains && !rec.el.contains(tip))) {
+    tip = document.createElement('div');
+    tip.className = 'chart-tip';
+    rec.el.appendChild(tip);
+    rec.tip = tip;
+  }
+  return tip;
+}
+
+// showTrendTip 填充明细内容并把浮层挪到数据点附近（贴边时向内收）。
+function showTrendTip(rec, idx) {
+  const p = rec.geo.pts[idx];
+  if (!p) return;
+  const tip = ensureTrendTip(rec);
+  tip.innerHTML = trendTipHTML(p.i, rec.opts);
+  tip.classList.add('on');
+
+  const tw = tip.offsetWidth || 0, th = tip.offsetHeight || 0;
+  let left = p.x - tw / 2;
+  if (tw) left = Math.max(2, Math.min(rec.geo.w - tw - 2, left));
+  let top = p.y - th - 12;  // 默认浮在点上方，不遮住折线
+  if (top < 2) top = p.y + 14; // 顶部空间不够就翻到点下方
+  tip.style.left = Math.round(left) + 'px';
+  tip.style.top = Math.round(top) + 'px';
+}
+
+function hideTrendTip(rec) {
+  if (rec.tip) rec.tip.classList.remove('on');
+}
+
+// trendTipHTML 某一个小时的明细：时间区间 + 主指标 + 成功/失败 + 输入输出 + 平均延迟。
+function trendTipHTML(i, opts) {
+  const p2 = n => String(n).padStart(2, '0');
+  const req = i.requests || 0;
+  const ok = i.success || 0, bad = i.failed || 0;
+  const tin = i.prompt_tokens || 0, tout = i.completion_tokens || 0;
+  const avg = req > 0 ? Math.round((i.total_latency_ms || 0) / req) : 0;
+  const d = new Date((i.ts || 0) * 1000);
+  const time = `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:00 – ${p2((d.getHours() + 1) % 24)}:00`;
+
+  const rows = [
+    ['请求', fmt(req) + ' 次', ''],
+    ['成功', fmt(ok), ''],
+    ['失败', fmt(bad), bad > 0 ? 'tip-err' : ''],
+    ['↓ 输入 / ↑ 输出', fmt(tin) + ' / ' + fmt(tout), ''],
+    ['平均延迟', req > 0 ? fmtLatency(avg) : '-', ''],
+  ];
+  return '<div class="tip-time">' + time + '</div>' +
+    '<div class="tip-main">' +
+    (opts.metric === 'tokens' ? 'Token 用量 ' + fmt(tin + tout) : '请求 ' + fmt(req) + ' 次') +
+    '</div>' +
+    '<div class="tip-sep"></div>' +
+    rows.map(([k, v, cls]) =>
+      '<div class="tip-row ' + cls + '"><span>' + k + '</span><b>' + v + '</b></div>').join('');
 }
 
 // 窗口缩放时按新宽度重绘所有折线图（测试沙箱可能没有 addEventListener，加保护）

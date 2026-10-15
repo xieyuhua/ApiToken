@@ -19,6 +19,28 @@ import (
 	"github.com/xieyuhua/apitoken/internal/store"
 )
 
+const (
+	// defaultIdleTimeout keep-alive 空闲连接的最大保持时间。
+	// 长于此值没有新请求就断开，避免代理/客户端异常退出留下的连接一直占着 fd。
+	defaultIdleTimeout = 120 * time.Second
+	// shutdownTimeout 优雅退出的等待上限：给在途请求这么多时间收尾，
+	// 超时后强制关闭，防止因为客户端慢导致进程永远退不掉。
+	shutdownTimeout = 10 * time.Second
+)
+
+// readHeaderTimeout 请求头的读取上限。
+//
+// Header 阶段不必等待整个请求体的时限：慢速攻击的典型特征就是把 Header 磨很久，
+// 早断开更早止损。取「15 秒」与配置 read_timeout 的较小者——用户把 read_timeout
+// 调小时，Header 超时必须跟着变小，否则那条短的时限形同虚设。
+func readHeaderTimeout(readTimeout time.Duration) time.Duration {
+	const headerTimeout = 15 * time.Second
+	if readTimeout > 0 && readTimeout < headerTimeout {
+		return readTimeout
+	}
+	return headerTimeout
+}
+
 func main() {
 	var (
 		cfgPath = flag.String("config", "config.yaml", "配置文件路径")
@@ -53,13 +75,14 @@ func main() {
 	app := gateway.New(cfg, st, logger)
 	app.StartHealthMonitor()
 
+	readTimeout := cfg.Server.ReadTimeout.D()
 	srv := &http.Server{
 		Addr:              cfg.Server.Addr,
 		Handler:           app.Handler(),
-		ReadHeaderTimeout: 15 * time.Second,
-		ReadTimeout:       cfg.Server.ReadTimeout.D(),
+		ReadHeaderTimeout: readHeaderTimeout(readTimeout),
+		ReadTimeout:       readTimeout,
 		WriteTimeout:      cfg.Server.WriteTimeout.D(),
-		IdleTimeout:       120 * time.Second,
+		IdleTimeout:       defaultIdleTimeout,
 	}
 
 	go func() {
@@ -84,7 +107,7 @@ func main() {
 	<-quit
 	logger.Info("收到退出信号，正在关闭…")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Error("关闭超时", "err", err)

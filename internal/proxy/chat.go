@@ -14,6 +14,7 @@ import (
 	"github.com/xieyuhua/apitoken/internal/config"
 	"github.com/xieyuhua/apitoken/internal/model"
 	"github.com/xieyuhua/apitoken/internal/store"
+	"github.com/xieyuhua/apitoken/internal/util"
 )
 
 // Handler OpenAI 兼容代理。
@@ -115,7 +116,10 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// serve 是两个入站协议共用的转发核心：渠道候选、故障转移、统计与访问日志都在这里。
+// serve 是两个入站协议共用的转发核心：编排候选查找、故障转移循环与最终回包。
+//
+// 循环体里每一步（成功记账、失败记账、stream_options 降级、终态回包）都拆成了独立函数，
+// 为的是让这里的控制流保持一条直线：能不能重试、要不要降级、怎么回包各自可读、可单独验证。
 func (h *Handler) serve(w http.ResponseWriter, r *http.Request, in relayRequest) {
 	start := time.Now()
 	entry := in.Entry
@@ -136,11 +140,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, in relayRequest)
 		return
 	}
 
-	limit := h.cfg.RT().MaxAttempts
-	if limit <= 0 || limit > len(candidates) {
-		limit = len(candidates)
-	}
-
+	limit := attemptLimit(h.cfg.RT().MaxAttempts, len(candidates))
 	var lastErr *upstreamError
 	// streamOptsRejected 已因「上游不接受 stream_options」降级过一次。
 	// 只降级一次：若去掉该字段后仍失败，按正常故障转移逻辑处理。
@@ -157,50 +157,18 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, in relayRequest)
 		res, uerr := h.attempt(w, r, reqID, cand, payload, stream, in.Resp, withClientUA(opts, r))
 		latency := time.Since(attStart)
 		if uerr == nil {
-			// 成功路径：渠道统计与请求级统计合并为一次加锁写入
-			h.store.RecordFinish(cand.ID, modelName, true, time.Since(start), latency,
-				res.Usage.Prompt, res.Usage.Completion, "")
-			entry.Error = ""
-			entry.Status = http.StatusOK
-			entry.ChannelID = cand.ID
-			entry.ChannelName = cand.Name
-			entry.UpstreamModel = cand.UpstreamModel
-			entry.Endpoint = res.Endpoint
-			entry.ResponseSnippet = res.Snippet
-			entry.ResponseSnippetFull = res.SnippetFull
-			entry.ResponseCapped = res.SnippetCapped
-			entry.PromptTokens = res.Usage.Prompt
-			entry.CompletionTokens = res.Usage.Completion
-			entry.LatencyMS = time.Since(start).Milliseconds()
-			h.logConvert(in.Resp, modelName, cand.ID)
-			h.finish(entry)
+			h.recordSuccess(entry, cand, res, start, latency, modelName, in.Resp)
 			return
 		}
 
 		lastErr = uerr
-		h.store.RecordChannelAttempt(cand.ID, false, latency, 0, 0, uerr.Error())
-		entry.ChannelID = cand.ID
-		entry.ChannelName = cand.Name
-		entry.UpstreamModel = cand.UpstreamModel
-		entry.Endpoint = res.Endpoint
-		entry.Error = uerr.Error()
-		// 每次上游尝试单独记录一条日志，便于在 /logs 页面追踪故障转移过程
-		attemptEntry := entry
-		attemptEntry.Time = time.Now()
-		attemptEntry.Status = statusOf(uerr)
-		attemptEntry.LatencyMS = latency.Milliseconds()
-		attemptEntry.ResponseSnippet = "" // 失败原因只放在 Error 字段
-		h.finish(attemptEntry)
+		h.recordAttemptFailure(entry, cand, res, uerr, latency)
 
 		// 上游不认识 stream_options（400 且错误信息点名该字段）：
 		// 去掉注入重试同一渠道，避免「流式一律 400、非流式却正常」。
 		// 只降级一次，避免与其他重试策略相互放大。
-		if !streamOptsRejected && uerr.Status == http.StatusBadRequest && streamOptionsRejected(uerr.Body) {
-			streamOptsRejected = true
-			h.store.MarkStreamOptionsUnsupported(cand.ID) // 记住：后续请求不再注入
-			i--                                           // 重试不占用故障转移额度
-			h.log.Info("上游不接受 stream_options，已去掉该字段重试",
-				"request_id", reqID, "channel", cand.ID, "model", modelName)
+		if h.downgradeStreamOptions(cand.ID, uerr, &streamOptsRejected, reqID, modelName) {
+			i-- // 重试不占用故障转移额度
 			continue
 		}
 
@@ -224,7 +192,77 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, in relayRequest)
 		// 未真正发起上游调用（如无可用候选）时补一条请求级日志
 		h.finish(entry)
 	}
+	h.writeFailure(w, r, in, entry, lastErr, reqID)
+}
 
+// attemptLimit 本次请求最多尝试几个渠道：取配置值与候选数的较小者。
+func attemptLimit(configured, candidates int) int {
+	if configured <= 0 || configured > candidates {
+		return candidates
+	}
+	return configured
+}
+
+// recordSuccess 成功路径的统计与日志落账。
+func (h *Handler) recordSuccess(entry model.LogEntry, cand model.Candidate, res relayResult,
+	start time.Time, latency time.Duration, modelName string, resp responder) {
+	// 渠道统计与请求级统计合并为一次加锁写入
+	h.store.RecordFinish(cand.ID, modelName, true, time.Since(start), latency,
+		res.Usage.Prompt, res.Usage.Completion, "")
+	entry.Error = ""
+	entry.Status = http.StatusOK
+	entry.ChannelID = cand.ID
+	entry.ChannelName = cand.Name
+	entry.UpstreamModel = cand.UpstreamModel
+	entry.Endpoint = res.Endpoint
+	entry.ResponseSnippet = res.Snippet
+	entry.ResponseSnippetFull = res.SnippetFull
+	entry.ResponseCapped = res.SnippetCapped
+	entry.PromptTokens = res.Usage.Prompt
+	entry.CompletionTokens = res.Usage.Completion
+	entry.LatencyMS = time.Since(start).Milliseconds()
+	h.logConvert(resp, modelName, cand.ID)
+	h.finish(entry)
+}
+
+// recordAttemptFailure 单次失败尝试的统计与「每次尝试一条」的访问日志。
+// 后者用于在 /logs 页面还原故障转移过程。
+func (h *Handler) recordAttemptFailure(entry model.LogEntry, cand model.Candidate, res relayResult, uerr *upstreamError, latency time.Duration) {
+	h.store.RecordChannelAttempt(cand.ID, false, latency, 0, 0, uerr.Error())
+	entry.ChannelID = cand.ID
+	entry.ChannelName = cand.Name
+	entry.UpstreamModel = cand.UpstreamModel
+	entry.Endpoint = res.Endpoint
+	entry.Error = uerr.Error()
+
+	attemptEntry := entry
+	attemptEntry.Time = time.Now()
+	attemptEntry.Status = statusOf(uerr)
+	attemptEntry.LatencyMS = latency.Milliseconds()
+	attemptEntry.ResponseSnippet = "" // 失败原因只放在 Error 字段
+	h.finish(attemptEntry)
+}
+
+// downgradeStreamOptions 判断是否需要「去掉 stream_options 重试同一渠道」。
+// 返回 true 时调用方应重试当前渠道（不占用故障转移额度）。
+func (h *Handler) downgradeStreamOptions(channelID string, uerr *upstreamError, done *bool, reqID, modelName string) bool {
+	if *done || uerr.Status != http.StatusBadRequest || !streamOptionsRejected(uerr.Body) {
+		return false
+	}
+	*done = true
+	h.store.MarkStreamOptionsUnsupported(channelID) // 记住：后续请求不再注入
+	h.log.Info("上游不接受 stream_options，已去掉该字段重试",
+		"request_id", reqID, "channel", channelID, "model", modelName)
+	return true
+}
+
+// writeFailure 全部尝试失败后的终态回包。
+//
+// 三种形态各有其必要性：transport 失败（没拿到响应）按 502 回包；
+// 上游返回了错误状态码则透传其状态码，并按入站协议改写错误体结构
+// （Anthropic 客户端按 error.type 分支，拿到 OpenAI 结构会显示成未知错误）。
+func (h *Handler) writeFailure(w http.ResponseWriter, r *http.Request, in relayRequest,
+	entry model.LogEntry, lastErr *upstreamError, reqID string) {
 	if lastErr == nil {
 		in.WriteErr(w, http.StatusBadGateway, "no_channel", "没有可用渠道", "")
 		return
@@ -236,7 +274,6 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, in relayRequest)
 		in.WriteErr(w, http.StatusBadGateway, "upstream_error", lastErr.Error(), "")
 		return
 	}
-	// 上游返回了错误状态码：按入站协议的错误结构回包，便于客户端正确解析
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("X-Request-Id", reqID)
 	if lastErr.ChannelID != "" {
@@ -246,18 +283,16 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, in relayRequest)
 		w.Header().Set("X-Gateway-Upstream-Model", lastErr.UpstreamModel)
 	}
 	if isAnthropic(in.Resp) {
-		// Anthropic 客户端按 error.type 分支处理，拿到 OpenAI 结构会显示成未知错误
-		w.WriteHeader(lastErr.Status)
 		writeAnthropicError(w, lastErr.Status, anthropicErrorType(lastErr.Status),
 			describeError(lastErr.Body, lastErr.Status))
 		return
 	}
-	w.WriteHeader(lastErr.Status)
-	body := lastErr.Body
-	if len(body) == 0 {
-		body = []byte(`{"error":{"message":"upstream error","type":"api_error"}}`)
+	if len(lastErr.Body) == 0 {
+		util.WriteError(w, lastErr.Status, "upstream_error", "upstream error", "api_error")
+		return
 	}
-	_, _ = w.Write(body)
+	w.WriteHeader(lastErr.Status)
+	_, _ = w.Write(lastErr.Body)
 }
 
 // logConvert 记录协议转换耗时与被丢弃的字段（仅发生转换时输出）。
@@ -341,12 +376,13 @@ func (h *Handler) relayJSON(w http.ResponseWriter, resp *http.Response, reqID st
 	var res relayResult
 	// 非流式响应整体读进内存再解析用量/摘要，必须设上限：
 	// 异常或恶意上游返回超大 body 会把网关内存撑爆。
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxRelayBody+1))
+	limit := h.relayBodyLimit()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return res, &upstreamError{Transport: err}
 	}
-	if int64(len(data)) > maxRelayBody {
-		return res, &upstreamError{Transport: fmt.Errorf("上游响应体超过 %dMB，已拒绝", maxRelayBody>>20)}
+	if int64(len(data)) > limit {
+		return res, &upstreamError{Transport: fmt.Errorf("上游响应体超过 %dMB，已拒绝", limit>>20)}
 	}
 	res.Usage = ParseUsage(data)
 	// 摘要取上游原文（转换前的诊断价值更高）
@@ -539,9 +575,21 @@ func clientIP(r *http.Request, trustProxy bool) string {
 	return host
 }
 
-// maxRelayBody 非流式上游响应的最大读取字节数。请求体有 currentMaxBody 限制，
-// 响应体同样需要上限，防止异常上游返回超大 body 撑爆内存。
-const maxRelayBody = 64 << 20
+// minRelayBodyLimit 非流式上游响应的最小读取上限。
+const minRelayBodyLimit = 64 << 20
+
+// relayBodyLimit 非流式上游响应的最大读取字节数。
+//
+// 请求体有 currentMaxBody（server.max_body_mb）限制，响应体同样必须有上限，
+// 防止异常上游返回超大 body 撑爆内存。这里取「配置上限」与 64MB 的较大者：
+// 把 max_body_mb 调小（比如 1MB）只代表网关愿意接受多大的入站请求，
+// 不该把出站回复也压到 1MB——长上下文对话的回复本身就会很大。
+func (h *Handler) relayBodyLimit() int64 {
+	if n := h.cfg.RT().MaxBodyBytes; n > minRelayBodyLimit {
+		return n
+	}
+	return minRelayBodyLimit
+}
 
 // logUAMaxRunes 日志里 User-Agent 的最大长度（按 rune 计），超长截断防止脏数据撑爆日志。
 const logUAMaxRunes = 120

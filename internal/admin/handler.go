@@ -2,9 +2,6 @@
 package admin
 
 import (
-	"bytes"
-	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -15,6 +12,7 @@ import (
 	"github.com/xieyuhua/apitoken/internal/model"
 	"github.com/xieyuhua/apitoken/internal/proxy"
 	"github.com/xieyuhua/apitoken/internal/store"
+	"github.com/xieyuhua/apitoken/internal/util"
 )
 
 // Handler 管理接口处理器。
@@ -32,7 +30,7 @@ type Handler struct {
 
 // New 构造管理处理器。
 func New(st *store.Store, cfg *config.Config, log *slog.Logger) *Handler {
-	return &Handler{store: st, cfg: cfg, log: log, client: proxy.NewClient(cfg)}
+	return &Handler{store: st, cfg: cfg, log: log, client: proxy.NewClient(cfg), probeFails: map[string]int{}}
 }
 
 // Register 注册路由。
@@ -415,26 +413,10 @@ func decodeChannel(r *http.Request) (model.Channel, error) {
 	return ch, nil
 }
 
-func decodeJSON(r *http.Request, v any) error {
-	data, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
-	if err != nil {
-		return err
-	}
-	if len(bytes.TrimSpace(data)) == 0 {
-		return nil
-	}
-	if err := json.Unmarshal(data, v); err != nil {
-		return err
-	}
-	return nil
-}
+func decodeJSON(r *http.Request, v any) error { return util.DecodeJSON(r, v) }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
+func writeJSON(w http.ResponseWriter, status int, v any) { util.WriteJSON(w, status, v) }
 
 func writeErr(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]any{"ok": false, "error": msg})
+	util.WriteJSON(w, status, map[string]any{"ok": false, "error": msg})
 }

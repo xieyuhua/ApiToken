@@ -101,14 +101,18 @@ func (c Channel) Masked() Channel {
 
 // MaskSecret 脱敏展示密钥：固定输出宽度（前 4 + 4 星号 + 后 4）。
 // 不按原长度补星号，避免长密钥脱敏后依然撑宽管理页表格，同时也隐蔽了密钥长度。
+//
+// 按 rune 而非 byte 切分：按字节切会在中文这类多字节字符中间下刀，
+// 产出半个码点，管理页展示成乱码（U+FFFD），导出的 JSON 也是非法 UTF-8。
 func MaskSecret(s string) string {
 	if s == "" {
 		return ""
 	}
-	if len(s) <= 8 {
-		return strings.Repeat("*", len(s))
+	rs := []rune(s)
+	if len(rs) <= 8 {
+		return strings.Repeat("*", len(rs))
 	}
-	return s[:4] + "****" + s[len(s)-4:]
+	return string(rs[:4]) + "****" + string(rs[len(rs)-4:])
 }
 
 // Route 显式路由：一个对外模型名 -> 有序渠道列表（顺序即故障转移顺序）。

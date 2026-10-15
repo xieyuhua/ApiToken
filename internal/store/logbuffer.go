@@ -21,10 +21,16 @@ type LogBuffer struct {
 	n    int // 有效条数（<= max）
 }
 
+// defaultLogBufferCap 未指定容量时的保留条数。
+//
+// 正常路径上这个值由配置的 keep_logs 决定（默认 2000），这里只为两种情况兜底：
+// 构造 Store 时拿不到配置、以及测试里直接 NewLogBuffer(0)。
+const defaultLogBufferCap = 200
+
 // NewLogBuffer 创建环形缓冲。
 func NewLogBuffer(max int) *LogBuffer {
 	if max <= 0 {
-		max = 200
+		max = defaultLogBufferCap
 	}
 	return &LogBuffer{buf: make([]model.LogEntry, max), max: max}
 }

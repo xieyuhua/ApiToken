@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
+
+	"github.com/xieyuhua/apitoken/internal/util"
 )
 
 // ResponsesStream 把上游 OpenAI SSE 流实时转成 Responses API 事件序列。
@@ -92,7 +94,7 @@ func (s *ResponsesStream) Line(payload string, done bool) []byte {
 	d := ch.Choices[0].Delta
 
 	// 思维链优先（Responses 要求 reasoning 排在正文之前）
-	if rc := firstNonEmpty(d.ReasoningContent, d.Reasoning); rc != "" {
+	if rc := util.FirstNonEmpty(d.ReasoningContent, d.Reasoning); rc != "" {
 		if s.info.WantReasoning {
 			out.Write(s.reasoningDelta(rc))
 		} else {

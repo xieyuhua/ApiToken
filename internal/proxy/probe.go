@@ -35,8 +35,13 @@ func DefaultProbeModel(ch model.Channel) string {
 	for m := range ch.Alias {
 		return m
 	}
-	return "gpt-4o"
+	return fallbackProbeModel
 }
+
+// fallbackProbeModel 渠道既没配 models 也没配 alias 时的探测模型名。
+// 这是「上游会忽略探测请求里的模型名」这一假设下的兜底：绝大多数 OpenAI 兼容
+// 端点都接受这个通用名；真不认，探测结果会如实报错，用户可在渠道里补配置。
+const fallbackProbeModel = "gpt-4o"
 
 // probeModel 挑选探测用的模型名：渠道已配置则取第一个；未配置则先问上游 /models，
 // 拿不到再退回通用名，避免因模型名不存在而误判为"连不上"。

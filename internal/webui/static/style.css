@@ -111,6 +111,21 @@ pre.log{font-family:ui-monospace,Consolas,monospace;font-size:12px;background:va
 .hrow .hinfo .hm{color:var(--muted)}
 .tagline{display:flex;gap:14px;flex-wrap:wrap;color:var(--muted);font-size:12px}
 
+/* 趋势图：鼠标/触屏悬浮时显示该小时的明细浮层 */
+.trend-canvas{display:block;touch-action:none}
+.chart-tip{
+  position:absolute;z-index:5;pointer-events:none;opacity:0;transition:opacity .12s ease;
+  min-width:178px;background:var(--panel);border:1px solid var(--border);border-radius:8px;
+  padding:8px 10px;box-shadow:var(--shadow);font-size:12px;line-height:1.6;white-space:nowrap;
+}
+.chart-tip.on{opacity:1}
+.chart-tip .tip-time{color:var(--muted);font-size:11.5px}
+.chart-tip .tip-main{font-size:13px;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums}
+.chart-tip .tip-sep{height:1px;background:var(--border);margin:6px 0}
+.chart-tip .tip-row{display:flex;justify-content:space-between;gap:18px;color:var(--muted)}
+.chart-tip .tip-row b{color:var(--text);font-weight:500;font-variant-numeric:tabular-nums}
+.chart-tip .tip-row.tip-err b{color:var(--err)}
+
 /* 主题切换按钮 */
 .theme-btn{width:34px;height:30px;padding:0;display:inline-flex;align-items:center;justify-content:center;font-size:15px;line-height:1}
 .secret{letter-spacing:.5px}
