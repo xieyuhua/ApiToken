@@ -62,11 +62,20 @@ type Runtime struct {
 	// 避免「第一个渠道刚失败，下一轮会话又第一个打到它」。
 	Cooldown time.Duration
 
+	// ProbeEnabled / ProbeInterval / ProbeFailThreshold 控制渠道后台自动探活：
+	// 关闭时不产生任何额外的上游请求，渠道健康状态只由真实请求与手动检测更新。
+	ProbeEnabled       bool
+	ProbeInterval      time.Duration
+	ProbeFailThreshold int
+
 	// 日志
 	AccessLog     bool
 	KeepLogs      int
 	RecordPayload bool
 	PayloadLimit  int
+	// LogArchive 调用日志页的默认数据源：false = 内存热缓冲（快，仅最近 keep_logs 条）；
+	// true = 磁盘归档（能查更早的历史，但要读文件，单次上限 2000 条）。
+	LogArchive bool
 
 	// 超时
 	RequestTimeout time.Duration
@@ -144,6 +153,13 @@ type RoutingConfig struct {
 	// Cooldown 渠道失败后的冷却时长。nil = 未配置（用默认值）；
 	// 0 = 显式关闭冷却（恢复「每轮都从第一个渠道开始」的旧行为）。
 	Cooldown *Duration `yaml:"cooldown"`
+	// ProbeEnabled 是否开启渠道后台自动探活（按间隔探测所有启用渠道，连续失败即进冷却）。
+	// nil = 未配置（默认开启）；显式 false = 关闭（此时只在真实请求失败时才冷却）。
+	ProbeEnabled *bool `yaml:"probe_enabled"`
+	// ProbeInterval 探活间隔。nil = 未配置（默认 60s）；过短会给上游增加额外请求负担。
+	ProbeInterval *Duration `yaml:"probe_interval"`
+	// ProbeFailThreshold 连续探活失败多少次才进冷却；<=0 取默认值 3。
+	ProbeFailThreshold int `yaml:"probe_fail_threshold"`
 }
 
 // LoggingConfig 日志配置。
@@ -153,6 +169,8 @@ type LoggingConfig struct {
 	KeepLogs      int    `yaml:"keep_logs"`
 	RecordPayload bool   `yaml:"record_payload"`
 	PayloadLimit  int    `yaml:"payload_limit"`
+	// LogArchive 调用日志页的默认数据源：true = 查磁盘归档，false = 查内存热缓冲
+	LogArchive bool `yaml:"log_archive"`
 
 	// 以下几项控制访问日志的异步落盘，改后需重启生效（涉及文件句柄）。
 	// 落盘由后台协程完成，请求路径只做一次非阻塞入队，不受磁盘速度影响。
@@ -238,6 +256,7 @@ func (c *Config) runtimeFromFields() *Runtime {
 		KeepLogs:       c.Logging.KeepLogs,
 		RecordPayload:  c.Logging.RecordPayload,
 		PayloadLimit:   c.Logging.PayloadLimit,
+		LogArchive:     c.Logging.LogArchive,
 		RequestTimeout: c.Server.RequestTimeout.D(),
 		StreamTimeout:  c.Server.StreamTimeout.D(),
 		MaxBodyBytes:   int64(c.Server.MaxBodyMB) << 20,
@@ -271,6 +290,19 @@ func (c *Config) runtimeFromFields() *Runtime {
 	} else {
 		rt.Cooldown = DefaultCooldown
 	}
+	// 探活三项：未配置时取默认值
+	rt.ProbeEnabled = DefaultProbeEnabled
+	if c.Routing.ProbeEnabled != nil {
+		rt.ProbeEnabled = *c.Routing.ProbeEnabled
+	}
+	rt.ProbeInterval = DefaultProbeInterval
+	if c.Routing.ProbeInterval != nil {
+		rt.ProbeInterval = c.Routing.ProbeInterval.D()
+	}
+	rt.ProbeFailThreshold = DefaultProbeFailThreshold
+	if c.Routing.ProbeFailThreshold > 0 {
+		rt.ProbeFailThreshold = c.Routing.ProbeFailThreshold
+	}
 	return rt
 }
 
@@ -284,10 +316,14 @@ func (c *Config) syncFields(rt *Runtime) {
 	c.Routing.RetryStatus = append([]int(nil), rt.RetryStatus...)
 	c.Routing.ForceStreamUsage = rt.ForceStreamUsage
 	c.Routing.Cooldown = durationPtr(rt.Cooldown)
+	c.Routing.ProbeEnabled = boolPtr(rt.ProbeEnabled)
+	c.Routing.ProbeInterval = durationPtr(rt.ProbeInterval)
+	c.Routing.ProbeFailThreshold = rt.ProbeFailThreshold
 	c.Logging.AccessLog = rt.AccessLog
 	c.Logging.KeepLogs = rt.KeepLogs
 	c.Logging.RecordPayload = rt.RecordPayload
 	c.Logging.PayloadLimit = rt.PayloadLimit
+	c.Logging.LogArchive = rt.LogArchive
 	c.Server.RequestTimeout = Duration(rt.RequestTimeout)
 	c.Server.StreamTimeout = Duration(rt.StreamTimeout)
 	c.Upstream.ProxyURL = rt.ProxyURL
@@ -383,6 +419,15 @@ const DefaultKeepLogs = 1000
 // 避免刚失败的渠道在下一轮请求里又被第一个尝试。设为 0 可关闭。
 const DefaultCooldown = 60 * time.Second
 
+// 渠道后台自动探活的默认值。
+// 默认开启：流量低谷时渠道挂掉也能被发现，提前移出候选列表；
+// ProbeFailThreshold 要求「连续」失败才冷却，用于过滤单次网络抖动、避免误伤健康渠道。
+const (
+	DefaultProbeEnabled       = true
+	DefaultProbeInterval      = 60 * time.Second
+	DefaultProbeFailThreshold = 3
+)
+
 // 访问日志落盘默认值。
 const (
 	// DefaultLogFileMaxMB 单个日志分段文件的大小上限，超过则滚动到新文件。
@@ -441,11 +486,13 @@ func Save(c *Config) error {
 		Routing: RoutingConfig{
 			Strategy: rt.Strategy, MaxAttempts: rt.MaxAttempts,
 			ForceStreamUsage: rt.ForceStreamUsage, RetryStatus: append([]int(nil), rt.RetryStatus...),
-			Cooldown: durationPtr(rt.Cooldown),
+			Cooldown:     durationPtr(rt.Cooldown),
+			ProbeEnabled: boolPtr(rt.ProbeEnabled), ProbeInterval: durationPtr(rt.ProbeInterval),
+			ProbeFailThreshold: rt.ProbeFailThreshold,
 		},
 		Logging: LoggingConfig{
 			Level: c.Logging.Level, AccessLog: rt.AccessLog, KeepLogs: rt.KeepLogs,
-			RecordPayload: rt.RecordPayload, PayloadLimit: rt.PayloadLimit,
+			RecordPayload: rt.RecordPayload, PayloadLimit: rt.PayloadLimit, LogArchive: rt.LogArchive,
 			FileEnabled: c.Logging.FileEnabled, FileDir: c.Logging.FileDir,
 			FileMaxMB: c.Logging.FileMaxMB, FileKeep: c.Logging.FileKeep,
 		},

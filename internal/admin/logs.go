@@ -54,10 +54,18 @@ func parseTime(s string) time.Time {
 	return time.Time{}
 }
 
-// useDiskArchive 是否改查磁盘归档（history=1）。
-// 默认查内存热缓冲（快）；开启后能翻到超出内存保留窗口的更早记录，代价是要读文件。
-func useDiskArchive(r *http.Request) bool {
-	return r.URL.Query().Get("history") == "1"
+// useDiskArchive 判断本次查询的数据源：
+// 以运行时配置 logging.log_archive 为准（设置页调整，立即生效）；
+// URL 参数 history=1/0 可临时覆盖，便于在页面上做一次性切换。
+func (h *Handler) useDiskArchive(r *http.Request) bool {
+	use := h.cfg.RT().LogArchive
+	switch r.URL.Query().Get("history") {
+	case "1":
+		use = true
+	case "0":
+		use = false
+	}
+	return use
 }
 
 // logs GET /admin/logs —— 分页 + 筛选 + 聚合统计。
@@ -65,7 +73,7 @@ func useDiskArchive(r *http.Request) bool {
 func (h *Handler) logs(w http.ResponseWriter, r *http.Request) {
 	q := logQuery(r)
 	var page model.LogPage
-	if useDiskArchive(r) {
+	if h.useDiskArchive(r) {
 		page = h.store.QueryDiskLogs(q)
 	} else {
 		page = h.store.QueryLogs(q)
@@ -138,7 +146,7 @@ func (h *Handler) exportLogs(w http.ResponseWriter, r *http.Request) {
 	q := logQuery(r)
 	// 导出走 ExportLogs 取全部匹配项，避免被 QueryLogs 的 500 条分页上限截断。
 	items := h.store.ExportLogs(q)
-	if useDiskArchive(r) {
+	if h.useDiskArchive(r) {
 		items = h.store.ExportDiskLogs(q)
 	}
 	format := r.URL.Query().Get("format")

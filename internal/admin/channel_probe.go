@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xieyuhua/apitoken/internal/config"
 	"github.com/xieyuhua/apitoken/internal/model"
 	"github.com/xieyuhua/apitoken/internal/proxy"
 	"github.com/xieyuhua/apitoken/internal/store"
@@ -26,17 +27,27 @@ func healthInfoFromProbe(res proxy.ProbeResult) store.HealthInfo {
 	return info
 }
 
-// probeFailThreshold 连续探活失败多少次才进入冷却。探活是低频的（默认 60s 一次），
-// 用连续失败阈值过滤单次抖动，避免把健康渠道误伤出候选列表。
-const probeFailThreshold = 3
-
 // ProbeAllChannels 后台自动探活：对所有启用渠道做一次最小对话请求，
 // 更新健康状态；连续失败达到阈值时进入冷却，成功则立即清除冷却。
 //
+// 是否真的探测由配置 routing.probe_enabled 决定（设置页开关）：关闭时不产生任何
+// 上游请求，渠道健康状态只由真实请求与手动检测更新。
 // 与真实请求路径的冷却区分开：探活冷却只是「提前」把挂掉的渠道移出候选，
 // 真实请求失败仍会走 recordChannelStatsLocked 的冷却逻辑，两者互不干扰。
 func (h *Handler) ProbeAllChannels(ctx context.Context) {
-	cd := h.cfg.RT().Cooldown
+	rt := h.cfg.RT()
+	if !rt.ProbeEnabled {
+		// 关闭时清空累计失败数：避免下次开启后拿久远的旧计数把健康渠道直接判进冷却
+		h.probeMu.Lock()
+		h.probeFails = nil
+		h.probeMu.Unlock()
+		return
+	}
+	cd := rt.Cooldown
+	threshold := rt.ProbeFailThreshold
+	if threshold <= 0 {
+		threshold = config.DefaultProbeFailThreshold
+	}
 
 	for _, ch := range h.store.ListChannels() {
 		if !ch.Enabled {
@@ -56,9 +67,10 @@ func (h *Handler) ProbeAllChannels(ctx context.Context) {
 			}
 		} else {
 			h.probeFails[ch.ID]++
-			if h.probeFails[ch.ID] >= probeFailThreshold && cd > 0 {
+			if h.probeFails[ch.ID] >= threshold && cd > 0 {
 				h.store.SetCooldown(ch.ID, time.Now().Add(cd))
-				h.log.Warn("渠道连续探活失败，进入冷却", "channel", ch.ID, "err", res.Error)
+				h.log.Warn("渠道连续探活失败，进入冷却", "channel", ch.ID,
+					"fails", h.probeFails[ch.ID], "err", res.Error)
 			}
 		}
 		h.probeMu.Unlock()

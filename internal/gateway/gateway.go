@@ -50,22 +50,34 @@ func New(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 	}
 }
 
-// healthProbeInterval 渠道后台自动探活间隔。探活只做一次最小对话请求（max_tokens=16），
-// 频率不必太高：60s 足够在「流量低谷渠道挂掉」时及时发现，又不至于给上游加额外负担。
-const healthProbeInterval = 60 * time.Second
+// minProbeInterval 探活间隔下限：防止配置过小导致反复打扰上游（Ticker 也不接受 <=0 的间隔）。
+const minProbeInterval = 10 * time.Second
 
-// StartHealthMonitor 启动渠道后台自动探活循环：启动后立即探一次，之后每 60s 一次。
+// probeInterval 当前配置的探活间隔（带下限保护）。
+func (s *Server) probeInterval() time.Duration {
+	d := s.cfg.RT().ProbeInterval
+	if d < minProbeInterval {
+		d = minProbeInterval
+	}
+	return d
+}
+
+// StartHealthMonitor 启动渠道后台自动探活循环：启动后立即探一次，之后按
+// routing.probe_interval（默认 60s）重复；是否真的发出探测请求由
+// routing.probe_enabled 决定，可在设置页开关。
 // 结果写入渠道健康状态，连续失败会进入冷却（见 admin.Handler.ProbeAllChannels）。
 func (s *Server) StartHealthMonitor() {
 	s.healthStop = make(chan struct{})
 	go func() {
 		s.admin.ProbeAllChannels(context.Background())
-		ticker := time.NewTicker(healthProbeInterval)
+		ticker := time.NewTicker(s.probeInterval())
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
 				s.admin.ProbeAllChannels(context.Background())
+				// 每轮都按最新配置重置间隔：设置页改了探活频率无需重启即可生效
+				ticker.Reset(s.probeInterval())
 			case <-s.healthStop:
 				return
 			}

@@ -106,6 +106,24 @@
         <input id="cooldown" type="number" min="0" max="3600" step="10" />
         <p class="hint">渠道调用失败后，冷却期内不再尝试该渠道（避免下一轮会话又第一个打到它）；0 = 关闭</p>
       </div>
+      <div>
+        <label>渠道后台自动探活</label>
+        <select id="probeEnabled" onchange="syncProbeInputs()">
+          <option value="true">开启（推荐）</option>
+          <option value="false">关闭</option>
+        </select>
+        <p class="hint">按下面的间隔对所有启用渠道做一次最小对话请求并更新健康状态。关闭后不产生任何额外上游请求，渠道健康状态只由真实请求与手动检测更新</p>
+      </div>
+      <div>
+        <label>探活间隔（秒）</label>
+        <input id="probeInterval" type="number" min="10" max="3600" step="10" />
+        <p class="hint">10 ~ 3600 秒；过短会给上游增加额外请求负担</p>
+      </div>
+      <div>
+        <label>连续失败几次进入冷却</label>
+        <input id="probeFailThreshold" type="number" min="1" max="20" />
+        <p class="hint">1 ~ 20 次。要求「连续」失败才冷却，用于过滤单次网络抖动、避免误伤健康渠道；冷却时长取上面的「渠道失败冷却」（为 0 时只记录健康状态，不进冷却）</p>
+      </div>
       <div style="grid-column:1/-1">
         <label>触发重试（切换下一个渠道）的状态码</label>
         <div class="row" id="retryBox"></div>
@@ -139,6 +157,14 @@
       <div>
         <label title="每条日志保存的请求/回复摘要长度上限（按字符计，中文 1 字 = 1 个字符）。超出后日志详情会标注实际被截断。">摘要最大字符数</label>
         <input id="payloadLimit" type="number" min="100" max="200000" step="100" />
+      </div>
+      <div>
+        <label>调用日志数据源</label>
+        <select id="logArchive">
+          <option value="false">内存热日志（快，仅最近 keep_logs 条）</option>
+          <option value="true">磁盘归档（可查历史，单次最多 2000 条）</option>
+        </select>
+        <p class="hint">决定「调用日志」页默认查哪里，页面顶部仍可临时切换。磁盘归档读的是 <code>data/logs</code> 下的落盘文件，需 <code>logging.file_enabled</code> 未关闭（默认开启）</p>
       </div>
     </div>
   </section>
@@ -194,6 +220,13 @@
 const RETRY_OPTS = [400, 401, 403, 404, 408, 409, 425, 429, 500, 502, 503, 504, 529];
 let current = null;
 
+// 探活关闭时禁用其从属参数，避免改了一堆却不生效
+function syncProbeInputs() {
+  const on = $('probeEnabled').value === 'true';
+  $('probeInterval').disabled = !on;
+  $('probeFailThreshold').disabled = !on;
+}
+
 function renderRetryBoxes(list) {
   $('retryBox').innerHTML = RETRY_OPTS.map(c =>
     '<label style="display:inline-flex;align-items:center;gap:5px;margin:0;padding:4px 9px;border:1px solid var(--border);border-radius:6px;cursor:pointer">' +
@@ -214,13 +247,18 @@ async function load() {
     $('adminToken').placeholder = d.admin_token_set ? '留空表示不修改' : '未设置';
     $('strategy').value = s.strategy;
     $('maxAttempts').value = s.max_attempts;
-  $('cooldown').value = s.cooldown_seconds;
+    $('cooldown').value = s.cooldown_seconds;
+    $('probeEnabled').value = String(!!s.probe_enabled);
+    $('probeInterval').value = s.probe_interval_seconds;
+    $('probeFailThreshold').value = s.probe_fail_threshold;
+    syncProbeInputs();
     $('forceStreamUsage').value = String(s.force_stream_usage);
     renderRetryBoxes(s.retry_status || []);
     $('accessLog').value = String(s.access_log);
     $('keepLogs').value = s.keep_logs;
     $('recordPayload').value = String(s.record_payload);
     $('payloadLimit').value = s.payload_limit;
+    $('logArchive').value = String(!!s.log_archive);
     $('requestTimeout').value = s.request_timeout;
     $('streamTimeout').value = s.stream_timeout;
     $('trustProxy').value = s.trust_proxy_headers ? 'true' : 'false';
@@ -305,12 +343,16 @@ async function save() {
     strategy: $('strategy').value,
     max_attempts: +$('maxAttempts').value,
     cooldown_seconds: +$('cooldown').value,
+    probe_enabled: $('probeEnabled').value === 'true',
+    probe_interval_seconds: +$('probeInterval').value,
+    probe_fail_threshold: +$('probeFailThreshold').value,
     force_stream_usage: $('forceStreamUsage').value === 'true',
     retry_status: Array.from(document.querySelectorAll('.rchk:checked')).map(el => +el.value),
     access_log: $('accessLog').value === 'true',
     keep_logs: +$('keepLogs').value,
     record_payload: $('recordPayload').value === 'true',
     payload_limit: +$('payloadLimit').value,
+    log_archive: $('logArchive').value === 'true',
     request_timeout: +$('requestTimeout').value,
     stream_timeout: +$('streamTimeout').value,
     trust_proxy_headers: $('trustProxy').value === 'true',

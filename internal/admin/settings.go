@@ -25,12 +25,21 @@ type SettingsView struct {
 	// CooldownSeconds 渠道失败后的冷却秒数；0 = 关闭冷却。nil = 不修改
 	CooldownSeconds *int `json:"cooldown_seconds"`
 
+	// ProbeEnabled 是否开启渠道后台自动探活（连续失败即进冷却）。nil = 不修改
+	ProbeEnabled *bool `json:"probe_enabled"`
+	// ProbeIntervalSeconds 探活间隔（秒）。nil = 不修改
+	ProbeIntervalSeconds *int `json:"probe_interval_seconds"`
+	// ProbeFailThreshold 连续探活失败几次才进冷却；0 = 不修改
+	ProbeFailThreshold int `json:"probe_fail_threshold"`
+
 	// 日志
-	AccessLog     *bool  `json:"access_log"`
-	KeepLogs      int    `json:"keep_logs"`
-	RecordPayload *bool  `json:"record_payload"`
-	PayloadLimit  int    `json:"payload_limit"`
-	LogLevel      string `json:"log_level"`
+	AccessLog     *bool `json:"access_log"`
+	KeepLogs      int   `json:"keep_logs"`
+	RecordPayload *bool `json:"record_payload"`
+	PayloadLimit  int   `json:"payload_limit"`
+	// LogArchive 调用日志页的默认数据源：true = 磁盘归档，false = 内存热缓冲。nil = 不修改
+	LogArchive *bool  `json:"log_archive"`
+	LogLevel   string `json:"log_level"`
 
 	// 超时（秒）
 	RequestTimeout int `json:"request_timeout"`
@@ -54,23 +63,28 @@ type SettingsMeta struct {
 
 func viewFromRuntime(rt *config.Runtime, level string) SettingsView {
 	cd := int(rt.Cooldown / time.Second)
+	iv := int(rt.ProbeInterval / time.Second)
 	return SettingsView{
-		ClientKeys:        append([]string(nil), rt.ClientKeys...),
-		AdminToken:        rt.AdminToken,
-		TrustProxyHeaders: boolPtr(rt.TrustProxyHeaders),
-		Strategy:          rt.Strategy,
-		MaxAttempts:       rt.MaxAttempts,
-		ForceStreamUsage:  boolPtr(rt.ForceStreamUsage),
-		RetryStatus:       append([]int(nil), rt.RetryStatus...),
-		CooldownSeconds:   &cd,
-		AccessLog:         boolPtr(rt.AccessLog),
-		KeepLogs:          rt.KeepLogs,
-		RecordPayload:     boolPtr(rt.RecordPayload),
-		PayloadLimit:      rt.PayloadLimit,
-		LogLevel:          level,
-		RequestTimeout:    int(rt.RequestTimeout / time.Second),
-		StreamTimeout:     int(rt.StreamTimeout / time.Second),
-		Theme:             rt.Theme,
+		ClientKeys:           append([]string(nil), rt.ClientKeys...),
+		AdminToken:           rt.AdminToken,
+		TrustProxyHeaders:    boolPtr(rt.TrustProxyHeaders),
+		Strategy:             rt.Strategy,
+		MaxAttempts:          rt.MaxAttempts,
+		ForceStreamUsage:     boolPtr(rt.ForceStreamUsage),
+		RetryStatus:          append([]int(nil), rt.RetryStatus...),
+		CooldownSeconds:      &cd,
+		ProbeEnabled:         boolPtr(rt.ProbeEnabled),
+		ProbeIntervalSeconds: &iv,
+		ProbeFailThreshold:   rt.ProbeFailThreshold,
+		AccessLog:            boolPtr(rt.AccessLog),
+		KeepLogs:             rt.KeepLogs,
+		RecordPayload:        boolPtr(rt.RecordPayload),
+		PayloadLimit:         rt.PayloadLimit,
+		LogArchive:           boolPtr(rt.LogArchive),
+		LogLevel:             level,
+		RequestTimeout:       int(rt.RequestTimeout / time.Second),
+		StreamTimeout:        int(rt.StreamTimeout / time.Second),
+		Theme:                rt.Theme,
 	}
 }
 
@@ -99,7 +113,7 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 			ConfigFile: h.cfg.Path(), DataFile: h.cfg.DataFile(), StatsFile: h.store.StatsFile(), Addr: h.cfg.Server.Addr,
 			Version: model.Version, Uptime: h.store.UptimeString(),
 			RestartNeeded: []string{"监听地址 addr", "数据目录 data_dir", "单次请求体积上限 max_body_mb", "上游连接池参数", "访问日志落盘开关 file_enabled"},
-			HotFields:     []string{"网关密钥 / 管理令牌", "来源 IP 解析", "路由策略与重试", "渠道失败冷却", "日志设置", "请求超时"},
+			HotFields:     []string{"网关密钥 / 管理令牌", "来源 IP 解析", "路由策略与重试", "渠道失败冷却", "渠道自动探活", "日志设置", "请求超时"},
 		},
 		"admin_token_set": rt.AdminToken != "",
 		"revealed":        revealed,
@@ -178,6 +192,34 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		next.Cooldown = time.Duration(cd) * time.Second
 	}
 
+	// 渠道后台探活
+	if in.ProbeEnabled != nil {
+		next.ProbeEnabled = *in.ProbeEnabled
+	}
+	if in.ProbeIntervalSeconds != nil {
+		sec := *in.ProbeIntervalSeconds
+		if sec < 10 {
+			writeErr(w, http.StatusBadRequest, "probe_interval_seconds 至少为 10（避免频繁打扰上游）")
+			return
+		}
+		if sec > 3600 {
+			writeErr(w, http.StatusBadRequest, "probe_interval_seconds 最多 3600（1 小时）")
+			return
+		}
+		next.ProbeInterval = time.Duration(sec) * time.Second
+	}
+	if in.ProbeFailThreshold != 0 {
+		if in.ProbeFailThreshold < 1 {
+			writeErr(w, http.StatusBadRequest, "probe_fail_threshold 至少为 1")
+			return
+		}
+		if in.ProbeFailThreshold > 20 {
+			writeErr(w, http.StatusBadRequest, "probe_fail_threshold 最多 20（阈值过大会让故障渠道迟迟不被剔除）")
+			return
+		}
+		next.ProbeFailThreshold = in.ProbeFailThreshold
+	}
+
 	// 日志
 	if in.AccessLog != nil {
 		next.AccessLog = *in.AccessLog
@@ -202,6 +244,9 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		next.PayloadLimit = in.PayloadLimit
+	}
+	if in.LogArchive != nil {
+		next.LogArchive = *in.LogArchive
 	}
 
 	// 超时
@@ -245,6 +290,6 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		"client_keys_new":       keysChanged,
 		"persist":               h.cfg.Path(),
 		"need_restart":          []string{},
-		"effective_immediately": []string{"网关密钥", "管理令牌", "路由策略", "重试状态码", "渠道失败冷却", "日志设置", "超时"},
+		"effective_immediately": []string{"网关密钥", "管理令牌", "路由策略", "重试状态码", "渠道失败冷却", "渠道自动探活", "日志设置", "超时"},
 	})
 }

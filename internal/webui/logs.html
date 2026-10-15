@@ -79,13 +79,13 @@
                     <div style="display:flex;align-items:flex-end;gap:8px">
                         <button onclick="page=1;load()">查询</button>
                         <button class="ghost" onclick="resetFilters()">重置</button>
-                        <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;color:var(--muted);cursor:pointer;white-space:nowrap"
-                               title="勾选后从磁盘归档 data/logs 检索，能翻到超出内存保留窗口的更早记录；不勾选只查内存热数据（更快）">
-                            <input type="checkbox" id="q_history" style="margin:0" /> 查历史归档
-                        </label>
                     </div>
                 </div>
-                <p class="hint">默认查内存热日志（最多保留 <code>logging.keep_logs</code> 条，重启后清空）；勾选「查历史归档」可从磁盘 <code>data/logs</code> 检索更早记录（慢一些，单次最多 2000 条）。时间范围对两种模式都生效。</p>
+                <p class="hint">
+                    数据源：<b id="srcNow">内存热日志</b>
+                    <button class="linkbtn" id="srcToggle" onclick="toggleArchive()">切到磁盘归档</button>
+                    <span class="muted">默认来源在「设置 → 日志」中修改；磁盘归档读 <code>data/logs</code>，可回溯超出内存保留窗口的更早记录（单次最多 2000 条）。时间范围对两种来源都生效。</span>
+                </p>
             </div>
 
             <table>
@@ -150,14 +150,14 @@
             // datetime-local 形如 2026-10-14T15:04，把 T 换成空格后后端可直接 ParseInLocation
             if ($('q_from').value) p.set('from', $('q_from').value.replace('T', ' '));
             if ($('q_to').value) p.set('to', $('q_to').value.replace('T', ' '));
-            if ($('q_history').checked) p.set('history', '1');
+            if (archiveMode) p.set('history', '1');
             for (const k in extra) p.set(k, extra[k]);
             return p.toString();
         }
 
         async function load() {
             try {
-                const hist = $('q_history').checked;
+                const hist = archiveMode;
                 const data = await api('/admin/logs?' + query());
                 page = data.page; pages = data.pages;
                 renderCards(data.stats, data);
@@ -296,12 +296,34 @@
             load();
         }
 
+        // 数据源：默认取服务端配置 logging.log_archive（在设置页修改），页面顶部可临时切换
+        let archiveMode = false;
+
+        async function loadArchivePref() {
+            try {
+                const d = await api('/admin/settings');
+                archiveMode = !!d.settings.log_archive;
+            } catch (e) { /* 取不到配置时按内存处理 */ }
+            renderSource();
+        }
+
+        function renderSource() {
+            $('srcNow').textContent = archiveMode ? '磁盘归档（可查历史）' : '内存热日志';
+            $('srcToggle').textContent = archiveMode ? '切到内存热日志' : '切到磁盘归档';
+        }
+
+        function toggleArchive() {
+            archiveMode = !archiveMode;
+            renderSource();
+            page = 1;
+            load();
+        }
+
         function resetFilters() {
             ['q_model', 'q_channel', 'q_status', 'q_stream'].forEach(id => $(id).value = '');
             $('q_keyword').value = '';
             $('q_from').value = '';
             $('q_to').value = '';
-            $('q_history').checked = false;
             page = 1;
             load();
         }
@@ -398,10 +420,10 @@
         $('q_keyword').addEventListener('keydown', e => { if (e.key === 'Enter') { page = 1; load(); } });
         ['q_model', 'q_channel', 'q_status', 'q_stream', 'q_size', 'q_from', 'q_to'].forEach(id =>
             $(id).addEventListener('change', () => { page = 1; load(); }));
-        $('q_history').addEventListener('change', () => { page = 1; load(); });
         $('autoRefresh').addEventListener('change', scheduleAuto);
 
-        load();
+        // 先取数据源偏好再加载列表，避免首屏用错数据源闪一下
+        loadArchivePref().finally(() => load());
         scheduleAuto();
     </script>
 </body>
